@@ -136,23 +136,6 @@ try {
     $stmt->execute([$owner_id]);
     $totalProducts = $stmt->fetch()['count'];
 
-    // ── Stock Value (cost & retail) ──────────────────────────────────────────
-    $stockBase = "FROM store_stocks ss JOIN products p ON ss.product_id = p.id JOIN stores st ON ss.store_id = st.id WHERE";
-    $stockParams = [];
-    if ($store_id) {
-        $stockBase .= " ss.store_id = ? AND p.status = 'active'";
-        $stockParams[] = $store_id;
-    } else {
-        $stockBase .= " st.owner_id = ? AND p.status = 'active'";
-        $stockParams[] = $owner_id;
-    }
-    $stmt = $db->prepare("SELECT COALESCE(SUM(ss.quantity * p.buy_price), 0) as cost_value, COALESCE(SUM(ss.quantity * p.sell_price), 0) as retail_value, COALESCE(SUM(ss.quantity), 0) as total_qty $stockBase");
-    $stmt->execute($stockParams);
-    $stockValue = $stmt->fetch();
-    $stockCostValue = (float)$stockValue['cost_value'];
-    $stockRetailValue = (float)$stockValue['retail_value'];
-    $stockQty = (int)$stockValue['total_qty'];
-
     // ── Total Categories ─────────────────────────────────────────────────────
     $stmt = $db->prepare("SELECT COUNT(*) as count FROM categories WHERE status = 'active' AND owner_id = ?");
     $stmt->execute([$owner_id]);
@@ -664,14 +647,7 @@ include 'includes/header.php';
             <div class="m-sub"><?php echo $totalCategories; ?> categories</div>
         </div>
     </div>
-    <div class="m-stat">
-        <div class="m-icon blue"><i class="fas fa-boxes"></i></div>
-        <div>
-            <div class="m-label">Stock Value</div>
-            <div class="m-value" style="color:#2563eb;"><?php echo formatCurrency($stockCostValue); ?></div>
-            <div class="m-sub"><?php echo $stockQty; ?> units in stock</div>
-        </div>
-    </div>
+    
     <div class="m-stat">
         <div class="m-icon cyan"><i class="fas fa-users"></i></div>
         <div>
