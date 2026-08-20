@@ -1,0 +1,12 @@
+# Disable Directory Browsing
+Options -Indexes
+
+# Set the default index file
+DirectoryIndex index.php
+
+# URL Rewriting (Optional but recommended for clean URLs)
+RewriteEngine On
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+# If your app is in a subdirectory, change / to /your-subdir/
+# RewriteRule ^(.*)$ index.php [L,QSA]
