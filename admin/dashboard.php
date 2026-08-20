@@ -667,17 +667,9 @@ include 'includes/header.php';
     <div class="m-stat">
         <div class="m-icon blue"><i class="fas fa-boxes"></i></div>
         <div>
-            <div class="m-label">Stock Value (Cost)</div>
+            <div class="m-label">Stock Value</div>
             <div class="m-value" style="color:#2563eb;"><?php echo formatCurrency($stockCostValue); ?></div>
             <div class="m-sub"><?php echo $stockQty; ?> units in stock</div>
-        </div>
-    </div>
-    <div class="m-stat">
-        <div class="m-icon green"><i class="fas fa-tags"></i></div>
-        <div>
-            <div class="m-label">Stock Value (Retail)</div>
-            <div class="m-value" style="color:#059669;"><?php echo formatCurrency($stockRetailValue); ?></div>
-            <div class="m-sub"><?php echo formatCurrency($stockRetailValue - $stockCostValue); ?> potential profit</div>
         </div>
     </div>
     <div class="m-stat">
