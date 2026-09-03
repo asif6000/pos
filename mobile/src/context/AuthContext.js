@@ -1,6 +1,5 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import api from '../config/api';
+import { supabase } from '../config/supabase';
 
 const AuthContext = createContext();
 
@@ -8,66 +7,97 @@ export const useAuth = () => useContext(AuthContext);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const loadStoredAuth = async () => {
-    try {
-      const storedToken = await AsyncStorage.getItem('token');
-      const storedUser = await AsyncStorage.getItem('user');
-      if (storedToken && storedUser) {
-        setToken(storedToken);
-        setUser(JSON.parse(storedUser));
-      }
-    } catch (error) {
-      console.error('Failed to load auth:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    loadStoredAuth();
+    const loadSession = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .single();
+          setUser(profile || { id: session.user.id, email: session.user.email, name: session.user.user_metadata?.name || '', role: session.user.user_metadata?.role || 'cashier' });
+        }
+      } catch (error) {
+        console.error('Failed to load session:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
+        setUser(profile || { id: session.user.id, email: session.user.email, name: session.user.user_metadata?.name || '', role: session.user.user_metadata?.role || 'cashier' });
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
+      }
+    });
+
+    return () => subscription?.unsubscribe();
   }, []);
 
   const login = async (email, password) => {
     try {
-      const response = await api.post('/auth/login', { email, password });
-      const { token: newToken, user: userData } = response.data;
-      await AsyncStorage.setItem('token', newToken);
-      await AsyncStorage.setItem('user', JSON.stringify(userData));
-      setToken(newToken);
-      setUser(userData);
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', data.user.id)
+        .single();
+      setUser(profile || { id: data.user.id, email: data.user.email, name: data.user.user_metadata?.name || '', role: data.user.user_metadata?.role || 'cashier' });
       return { success: true };
     } catch (error) {
-      const message = error.response?.data?.message || 'Login failed. Please try again.';
-      return { success: false, message };
+      return { success: false, message: error.message || 'Login failed. Please try again.' };
     }
   };
 
   const register = async (name, email, password) => {
     try {
-      const response = await api.post('/auth/register', { name, email, password });
-      const { token: newToken, user: userData } = response.data;
-      await AsyncStorage.setItem('token', newToken);
-      await AsyncStorage.setItem('user', JSON.stringify(userData));
-      setToken(newToken);
-      setUser(userData);
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { name, role: 'admin' } },
+      });
+      if (error) throw error;
+      if (data.user) {
+        await supabase.from('profiles').insert({
+          id: data.user.id,
+          name,
+          email,
+          role: 'admin',
+          status: 'active',
+        });
+      }
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', data.user.id)
+        .single();
+      setUser(profile || { id: data.user.id, email, name, role: 'admin' });
       return { success: true };
     } catch (error) {
-      const message = error.response?.data?.message || 'Registration failed. Please try again.';
-      return { success: false, message };
+      return { success: false, message: error.message || 'Registration failed. Please try again.' };
     }
   };
 
   const logout = async () => {
-    await AsyncStorage.multiRemove(['token', 'user']);
-    setToken(null);
+    await supabase.auth.signOut();
     setUser(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
       {children}
     </AuthContext.Provider>
   );

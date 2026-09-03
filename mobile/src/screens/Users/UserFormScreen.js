@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, StyleSheet, ScrollView, Alert, TouchableOpacity, Modal, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { COLORS } from '../../utils/helpers';
 import Header from '../../components/Header';
 import Button from '../../components/Button';
@@ -37,18 +37,35 @@ const UserFormScreen = ({ navigation, route }) => {
     }
     setLoading(true);
     try {
-      const data = { name: name.trim(), email: email.trim(), role, status };
-      if (password.trim()) data.password = password;
-
       if (isEdit) {
-        await api.put(`/users/${user._id || user.id}`, data);
+        const profileData = { name: name.trim(), email: email.trim(), role, status };
+        const { error: profileError } = await supabase.from('profiles').update(profileData).eq('id', user.id);
+        if (profileError) throw profileError;
+        if (password.trim()) {
+          await supabase.auth.admin.updateUserById(user.id, { password: password });
+        }
         Alert.alert('Success', 'User updated', [{ text: 'OK', onPress: () => navigation.goBack() }]);
       } else {
-        await api.post('/users', data);
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: { data: { name: name.trim(), role } },
+        });
+        if (error) throw error;
+        if (data.user) {
+          const { error: profileError } = await supabase.from('profiles').insert({
+            id: data.user.id,
+            name: name.trim(),
+            email: email.trim(),
+            role,
+            status,
+          });
+          if (profileError) throw profileError;
+        }
         Alert.alert('Success', 'User created', [{ text: 'OK', onPress: () => navigation.goBack() }]);
       }
     } catch (error) {
-      Alert.alert('Error', error.response?.data?.message || 'Failed to save user');
+      Alert.alert('Error', error.message || 'Failed to save user');
     } finally {
       setLoading(false);
     }

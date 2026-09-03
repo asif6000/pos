@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { COLORS } from '../../utils/helpers';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import EmptyState from '../../components/EmptyState';
@@ -13,8 +13,9 @@ const UsersScreen = ({ navigation }) => {
 
   const fetchUsers = async () => {
     try {
-      const res = await api.get('/users');
-      setUsers(res.data.users || res.data || []);
+      const { data, error } = await supabase.from('profiles').select('*');
+      if (error) throw error;
+      setUsers(data || []);
     } catch (error) {
       console.error('Fetch users error:', error);
     } finally {
@@ -30,8 +31,9 @@ const UsersScreen = ({ navigation }) => {
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
           try {
-            await api.delete(`/users/${item._id || item.id}`);
-            setUsers(users.filter((u) => (u._id || u.id) !== (item._id || item.id)));
+            const { error } = await supabase.from('profiles').delete().eq('id', item.id);
+            if (error) throw error;
+            setUsers(users.filter((u) => u.id !== item.id));
           } catch (error) {
             Alert.alert('Error', 'Failed to delete user');
           }
@@ -77,7 +79,7 @@ const UsersScreen = ({ navigation }) => {
       <FlatList
         data={users}
         renderItem={renderItem}
-        keyExtractor={(item) => item._id || item.id}
+        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={<EmptyState icon="people-outline" message="No users found" />}
         onRefresh={fetchUsers}

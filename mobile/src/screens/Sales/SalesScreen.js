@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { formatCurrency, formatDate, COLORS } from '../../utils/helpers';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import EmptyState from '../../components/EmptyState';
@@ -13,17 +13,25 @@ const SalesScreen = ({ navigation }) => {
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);
   const [paymentFilter, setPaymentFilter] = useState('All');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
 
   const fetchSales = async () => {
     try {
-      const params = {};
-      if (paymentFilter !== 'All') params.paymentMethod = paymentFilter;
-      if (dateFrom) params.from = dateFrom;
-      if (dateTo) params.to = dateTo;
-      const res = await api.get('/sales', { params });
-      setSales(res.data.sales || res.data || []);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      let query = supabase
+        .from('sales')
+        .select('*, customers(name), sale_items(*, products(name))')
+        .eq('owner_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (paymentFilter !== 'All') {
+        query = query.eq('payment_method', paymentFilter);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      setSales(data || []);
     } catch (error) {
       console.error('Fetch sales error:', error);
     } finally {
@@ -33,22 +41,20 @@ const SalesScreen = ({ navigation }) => {
 
   useFocusEffect(useCallback(() => { fetchSales(); }, [paymentFilter]));
 
-  const filteredSales = paymentFilter === 'All' ? sales : sales.filter((s) => s.paymentMethod === paymentFilter);
-
   const renderItem = ({ item }) => (
     <TouchableOpacity
       style={styles.item}
       onPress={() => navigation.navigate('SaleDetail', { sale: item })}
     >
       <View style={styles.itemLeft}>
-        <Text style={styles.invoice}>{item.invoiceNumber || 'N/A'}</Text>
-        <Text style={styles.customer}>{item.customer?.name || 'Walk-in'}</Text>
-        <Text style={styles.date}>{formatDate(item.createdAt || item.date)}</Text>
+        <Text style={styles.invoice}>{item.invoice_number || 'N/A'}</Text>
+        <Text style={styles.customer}>{item.customers?.name || 'Walk-in'}</Text>
+        <Text style={styles.date}>{formatDate(item.created_at || item.date)}</Text>
       </View>
       <View style={styles.itemRight}>
         <Text style={styles.amount}>{formatCurrency(item.total)}</Text>
         <View style={[styles.badge, { backgroundColor: COLORS.primary + '15' }]}>
-          <Text style={styles.badgeText}>{item.paymentMethod}</Text>
+          <Text style={styles.badgeText}>{item.payment_method}</Text>
         </View>
       </View>
     </TouchableOpacity>
@@ -71,9 +77,9 @@ const SalesScreen = ({ navigation }) => {
       </View>
 
       <FlatList
-        data={filteredSales}
+        data={sales}
         renderItem={renderItem}
-        keyExtractor={(item) => item._id || item.id}
+        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={<EmptyState icon="receipt-outline" message="No sales found" />}
         onRefresh={fetchSales}

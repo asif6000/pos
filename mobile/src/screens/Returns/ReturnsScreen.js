@@ -1,10 +1,10 @@
-import React, { useState, useCallback } from 'react';
+﻿import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, Modal, ScrollView, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { formatCurrency, formatDate, COLORS } from '../../utils/helpers';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import EmptyState from '../../components/EmptyState';
@@ -26,8 +26,10 @@ const ReturnsScreen = () => {
 
   const fetchReturns = async () => {
     try {
-      const res = await api.get('/returns');
-      setReturns(res.data.returns || res.data || []);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase.from('returns').select('*, sales(invoice_number)').eq('owner_id', user.id).order('created_at', { ascending: false });
+      setReturns(data || []);
     } catch (error) {
       console.error('Fetch returns error:', error);
     } finally {
@@ -39,8 +41,14 @@ const ReturnsScreen = () => {
 
   const openProcessModal = async () => {
     try {
-      const res = await api.get('/sales');
-      setSales(res.data.sales || res.data || []);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase
+        .from('sales')
+        .select('*, customers(name), sale_items(*, products(name))')
+        .eq('owner_id', user.id)
+        .order('created_at', { ascending: false });
+      setSales(data || []);
     } catch (error) {
       console.error('Fetch sales error:', error);
     }
@@ -57,9 +65,9 @@ const ReturnsScreen = () => {
   };
 
   const toggleItem = (item) => {
-    const exists = selectedItems.find((i) => (i.product?._id || i.product?.id || i.product) === (item.product?._id || item.product?.id || item.product));
+    const exists = selectedItems.find((i) => i.product_id === item.product_id);
     if (exists) {
-      setSelectedItems(selectedItems.filter((i) => (i.product?._id || i.product?.id || i.product) !== (item.product?._id || item.product?.id || item.product)));
+      setSelectedItems(selectedItems.filter((i) => i.product_id !== item.product_id));
     } else {
       setSelectedItems([...selectedItems, { ...item, returnQty: 1 }]);
     }
@@ -68,7 +76,7 @@ const ReturnsScreen = () => {
   const updateReturnQty = (productId, qty) => {
     if (qty < 1) return;
     setSelectedItems(selectedItems.map((i) =>
-      (i.product?._id || i.product?.id || i.product) === productId ? { ...i, returnQty: Math.min(qty, i.qty) } : i
+      i.product_id === productId ? { ...i, returnQty: Math.min(qty, i.qty) } : i
     ));
   };
 
@@ -83,27 +91,34 @@ const ReturnsScreen = () => {
     }
     setProcessing(true);
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
       const returnData = {
-        sale: selectedSale._id || selectedSale.id,
+        sale_id: selectedSale.id,
+        owner_id: user.id,
         items: selectedItems.map((i) => ({
-          product: i.product?._id || i.product?.id || i.product,
+          product_id: i.product_id,
           qty: i.returnQty,
           price: i.price,
         })),
-        refundMethod,
+        refund_method: refundMethod,
         reason: reason.trim(),
+        total_refund: selectedItems.reduce((sum, i) => sum + i.returnQty * i.price, 0),
       };
-      await api.post('/returns', returnData);
+
+      const { error } = await supabase.rpc('process_return', { p_return_data: returnData });
+      if (error) throw error;
       Alert.alert('Success', 'Return processed', [{ text: 'OK', onPress: () => { setShowProcessModal(false); fetchReturns(); } }]);
     } catch (error) {
-      Alert.alert('Error', error.response?.data?.message || 'Failed to process return');
+      Alert.alert('Error', error.message || 'Failed to process return');
     } finally {
       setProcessing(false);
     }
   };
 
   const filteredSales = sales.filter((s) =>
-    !searchSale || s.invoiceNumber?.toLowerCase().includes(searchSale.toLowerCase()) || s.customer?.name?.toLowerCase().includes(searchSale.toLowerCase())
+    !searchSale || s.invoice_number?.toLowerCase().includes(searchSale.toLowerCase()) || s.customers?.name?.toLowerCase().includes(searchSale.toLowerCase())
   );
 
   const renderItem = ({ item }) => (
@@ -111,12 +126,12 @@ const ReturnsScreen = () => {
       <View style={styles.itemHeader}>
         <Ionicons name="return-down-back" size={20} color={COLORS.danger} />
         <View style={styles.itemInfo}>
-          <Text style={styles.itemTitle}>Return #{item.returnNumber || item._id?.slice(-6) || 'N/A'}</Text>
-          <Text style={styles.itemSub}>Sale: {item.sale?.invoiceNumber || 'N/A'}</Text>
+          <Text style={styles.itemTitle}>Return #{item.return_number || item.id?.slice(-6) || 'N/A'}</Text>
+          <Text style={styles.itemSub}>Sale: {item.sales?.invoice_number || 'N/A'}</Text>
         </View>
         <View style={styles.itemRight}>
-          <Text style={styles.itemAmount}>-{formatCurrency(item.totalRefund || item.total)}</Text>
-          <Text style={styles.itemDate}>{formatDate(item.createdAt)}</Text>
+          <Text style={styles.itemAmount}>-{formatCurrency(item.total_refund || item.total)}</Text>
+          <Text style={styles.itemDate}>{formatDate(item.created_at)}</Text>
         </View>
       </View>
       {item.reason && <Text style={styles.itemReason}>Reason: {item.reason}</Text>}
@@ -130,7 +145,7 @@ const ReturnsScreen = () => {
       <FlatList
         data={returns}
         renderItem={renderItem}
-        keyExtractor={(item) => item._id || item.id}
+        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={<EmptyState icon="return-down-back" message="No returns found" />}
         onRefresh={fetchReturns}
@@ -162,10 +177,10 @@ const ReturnsScreen = () => {
                     placeholderTextColor={COLORS.muted}
                   />
                   {filteredSales.slice(0, 10).map((sale) => (
-                    <TouchableOpacity key={sale._id || sale.id} style={styles.saleOption} onPress={() => selectSale(sale)}>
+                    <TouchableOpacity key={sale.id} style={styles.saleOption} onPress={() => selectSale(sale)}>
                       <View>
-                        <Text style={styles.saleOptionTitle}>{sale.invoiceNumber || 'N/A'}</Text>
-                        <Text style={styles.saleOptionSub}>{sale.customer?.name || 'Walk-in'} - {formatDate(sale.createdAt || sale.date)}</Text>
+                        <Text style={styles.saleOptionTitle}>{sale.invoice_number || 'N/A'}</Text>
+                        <Text style={styles.saleOptionSub}>{sale.customers?.name || 'Walk-in'} - {formatDate(sale.created_at || sale.date)}</Text>
                       </View>
                       <Text style={styles.saleOptionTotal}>{formatCurrency(sale.total)}</Text>
                     </TouchableOpacity>
@@ -174,33 +189,31 @@ const ReturnsScreen = () => {
               ) : (
                 <>
                   <View style={styles.selectedSale}>
-                    <Text style={styles.selectedSaleTitle}>{selectedSale.invoiceNumber}</Text>
+                    <Text style={styles.selectedSaleTitle}>{selectedSale.invoice_number}</Text>
                     <TouchableOpacity onPress={() => { setSelectedSale(null); setSelectedItems([]); }}>
                       <Text style={styles.changeBtn}>Change</Text>
                     </TouchableOpacity>
                   </View>
 
                   <Text style={styles.itemsTitle}>Select items to return:</Text>
-                  {(selectedSale.items || []).map((item) => {
-                    const isSelected = selectedItems.find((i) =>
-                      (i.product?._id || i.product?.id || i.product) === (item.product?._id || item.product?.id || item.product)
-                    );
+                  {(selectedSale.sale_items || []).map((item) => {
+                    const isSelected = selectedItems.find((i) => i.product_id === item.product_id);
                     return (
-                      <View key={item.product?._id || item.product?.id || item.product} style={styles.itemOption}>
+                      <View key={item.product_id} style={styles.itemOption}>
                         <TouchableOpacity style={styles.itemCheck} onPress={() => toggleItem(item)}>
                           <Ionicons name={isSelected ? 'checkbox' : 'square-outline'} size={22} color={isSelected ? COLORS.primary : COLORS.muted} />
                         </TouchableOpacity>
                         <View style={styles.itemOptionInfo}>
-                          <Text style={styles.itemOptionName}>{item.name || item.product?.name}</Text>
-                          <Text style={styles.itemOptionDetail}>Qty: {item.qty} × {formatCurrency(item.price)}</Text>
+                          <Text style={styles.itemOptionName}>{item.products?.name || item.name}</Text>
+                          <Text style={styles.itemOptionDetail}>Qty: {item.qty} at {formatCurrency(item.price)}</Text>
                         </View>
                         {isSelected && (
                           <View style={styles.qtyControl}>
-                            <TouchableOpacity onPress={() => updateReturnQty(item.product?._id || item.product?.id || item.product, isSelected.returnQty - 1)}>
+                            <TouchableOpacity onPress={() => updateReturnQty(item.product_id, isSelected.returnQty - 1)}>
                               <Ionicons name="remove-circle" size={24} color={COLORS.danger} />
                             </TouchableOpacity>
                             <Text style={styles.qtyText}>{isSelected.returnQty}</Text>
-                            <TouchableOpacity onPress={() => updateReturnQty(item.product?._id || item.product?.id || item.product, isSelected.returnQty + 1)}>
+                            <TouchableOpacity onPress={() => updateReturnQty(item.product_id, isSelected.returnQty + 1)}>
                               <Ionicons name="add-circle" size={24} color={COLORS.success} />
                             </TouchableOpacity>
                           </View>

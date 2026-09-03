@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, TextInput, StyleSheet, ScrollView, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { useAuth } from '../../context/AuthContext';
 import { COLORS } from '../../utils/helpers';
 import Button from '../../components/Button';
@@ -21,15 +21,18 @@ const SettingsScreen = ({ navigation }) => {
 
   const fetchSettings = async () => {
     try {
-      const res = await api.get('/settings');
-      const s = res.data.settings || res.data;
-      setShopName(s.shopName || '');
-      setShopAddress(s.shopAddress || '');
-      setShopPhone(s.shopPhone || '');
-      setShopEmail(s.shopEmail || '');
-      setCurrency(s.currency || '৳');
-      setVatPercent(String(s.vatPercent || 0));
-      setReceiptFooter(s.receiptFooter || '');
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) return;
+      const { data } = await supabase.from('settings').select('*').eq('owner_id', authUser.id).single();
+      if (data) {
+        setShopName(data.shop_name || '');
+        setShopAddress(data.shop_address || '');
+        setShopPhone(data.shop_phone || '');
+        setShopEmail(data.shop_email || '');
+        setCurrency(data.currency || '৳');
+        setVatPercent(String(data.vat_percent || 0));
+        setReceiptFooter(data.receipt_footer || '');
+      }
     } catch (error) {
       console.error('Fetch settings error:', error);
     } finally {
@@ -42,18 +45,23 @@ const SettingsScreen = ({ navigation }) => {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.put('/settings', {
-        shopName: shopName.trim(),
-        shopAddress: shopAddress.trim(),
-        shopPhone: shopPhone.trim(),
-        shopEmail: shopEmail.trim(),
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) throw new Error('Not authenticated');
+
+      const { error } = await supabase.from('settings').upsert({
+        owner_id: authUser.id,
+        shop_name: shopName.trim(),
+        shop_address: shopAddress.trim(),
+        shop_phone: shopPhone.trim(),
+        shop_email: shopEmail.trim(),
         currency,
-        vatPercent: parseFloat(vatPercent) || 0,
-        receiptFooter: receiptFooter.trim(),
-      });
+        vat_percent: parseFloat(vatPercent) || 0,
+        receipt_footer: receiptFooter.trim(),
+      }, { onConflict: 'owner_id' });
+      if (error) throw error;
       Alert.alert('Success', 'Settings saved');
     } catch (error) {
-      Alert.alert('Error', 'Failed to save settings');
+      Alert.alert('Error', error.message || 'Failed to save settings');
     } finally {
       setSaving(false);
     }

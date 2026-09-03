@@ -3,7 +3,7 @@ import {
   View, Text, TextInput, StyleSheet, ScrollView, Alert, TouchableOpacity, Modal, FlatList, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { COLORS } from '../../utils/helpers';
 import Header from '../../components/Header';
 import Button from '../../components/Button';
@@ -14,11 +14,11 @@ const ProductFormScreen = ({ navigation, route }) => {
 
   const [name, setName] = useState(product?.name || '');
   const [barcode, setBarcode] = useState(product?.barcode || '');
-  const [categoryId, setCategoryId] = useState(product?.category?._id || product?.category?.id || product?.category || '');
-  const [buyPrice, setBuyPrice] = useState(String(product?.buyPrice || ''));
-  const [sellPrice, setSellPrice] = useState(String(product?.sellPrice || ''));
+  const [categoryId, setCategoryId] = useState(product?.category_id || '');
+  const [buyPrice, setBuyPrice] = useState(String(product?.buy_price || ''));
+  const [sellPrice, setSellPrice] = useState(String(product?.sell_price || ''));
   const [stock, setStock] = useState(String(product?.stock || ''));
-  const [minStock, setMinStock] = useState(String(product?.minStock || ''));
+  const [minStock, setMinStock] = useState(String(product?.min_stock || ''));
   const [unit, setUnit] = useState(product?.unit || 'piece');
   const [description, setDescription] = useState(product?.description || '');
   const [categories, setCategories] = useState([]);
@@ -31,14 +31,16 @@ const ProductFormScreen = ({ navigation, route }) => {
 
   const fetchCategories = async () => {
     try {
-      const res = await api.get('/categories');
-      setCategories(res.data.categories || res.data || []);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase.from('categories').select('*').eq('owner_id', user.id);
+      setCategories(data || []);
     } catch (error) {
       console.error('Fetch categories error:', error);
     }
   };
 
-  const selectedCategoryName = categories.find((c) => (c._id || c.id) === categoryId)?.name || 'Select Category';
+  const selectedCategoryName = categories.find((c) => c.id === categoryId)?.name || 'Select Category';
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -51,26 +53,34 @@ const ProductFormScreen = ({ navigation, route }) => {
     }
     setLoading(true);
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
       const data = {
         name: name.trim(),
-        barcode: barcode.trim(),
-        category: categoryId || undefined,
-        buyPrice: parseFloat(buyPrice) || 0,
-        sellPrice: parseFloat(sellPrice),
+        barcode: barcode.trim() || null,
+        category_id: categoryId || null,
+        buy_price: parseFloat(buyPrice) || 0,
+        sell_price: parseFloat(sellPrice),
         stock: parseInt(stock) || 0,
-        minStock: parseInt(minStock) || 0,
+        min_stock: parseInt(minStock) || 0,
         unit,
         description: description.trim(),
       };
+
       if (isEdit) {
-        await api.put(`/products/${product._id || product.id}`, data);
+        const { error } = await supabase.from('products').update(data).eq('id', product.id);
+        if (error) throw error;
         Alert.alert('Success', 'Product updated', [{ text: 'OK', onPress: () => navigation.goBack() }]);
       } else {
-        await api.post('/products', data);
+        data.owner_id = user.id;
+        data.status = 'active';
+        const { error } = await supabase.from('products').insert(data);
+        if (error) throw error;
         Alert.alert('Success', 'Product created', [{ text: 'OK', onPress: () => navigation.goBack() }]);
       }
     } catch (error) {
-      Alert.alert('Error', error.response?.data?.message || 'Failed to save product');
+      Alert.alert('Error', error.message || 'Failed to save product');
     } finally {
       setLoading(false);
     }
@@ -149,14 +159,14 @@ const ProductFormScreen = ({ navigation, route }) => {
             </TouchableOpacity>
             <FlatList
               data={categories}
-              keyExtractor={(item) => item._id || item.id}
+              keyExtractor={(item) => item.id}
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={styles.categoryOption}
-                  onPress={() => { setCategoryId(item._id || item.id); setShowCategoryPicker(false); }}
+                  onPress={() => { setCategoryId(item.id); setShowCategoryPicker(false); }}
                 >
                   <Text style={styles.categoryOptionText}>{item.name}</Text>
-                  {categoryId === (item._id || item.id) && <Ionicons name="checkmark" size={20} color={COLORS.primary} />}
+                  {categoryId === item.id && <Ionicons name="checkmark" size={20} color={COLORS.primary} />}
                 </TouchableOpacity>
               )}
             />

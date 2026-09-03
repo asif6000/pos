@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, RefreshControl, FlatList, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { useAuth } from '../../context/AuthContext';
 import { formatCurrency, formatDate, COLORS } from '../../utils/helpers';
 import LoadingSpinner from '../../components/LoadingSpinner';
@@ -19,16 +19,29 @@ const DashboardScreen = () => {
 
   const fetchData = async () => {
     try {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) return;
+      const ownerId = authUser.id;
+
       const [statsRes, lowStockRes, salesRes, topRes] = await Promise.allSettled([
-        api.get('/dashboard/stats'),
-        api.get('/products/low-stock'),
-        api.get('/sales?limit=5'),
-        api.get('/reports/top-products?limit=5'),
+        supabase.rpc('get_dashboard_stats', { p_owner_id: ownerId }),
+        supabase.from('products').select('*').eq('owner_id', ownerId).lte('stock', '5'),
+        supabase.from('sales').select('*, customers(name)').eq('owner_id', ownerId).order('created_at', { ascending: false }).limit(5),
+        supabase.rpc('get_top_products', { p_owner_id: ownerId, p_limit: 5 }),
       ]);
-      if (statsRes.status === 'fulfilled') setStats(statsRes.value.data);
-      if (lowStockRes.status === 'fulfilled') setLowStock(lowStockRes.value.data.products || lowStockRes.value.data || []);
-      if (salesRes.status === 'fulfilled') setRecentSales(salesRes.value.data.sales || salesRes.value.data || []);
-      if (topRes.status === 'fulfilled') setTopProducts(topRes.value.data.products || topRes.value.data || []);
+
+      if (statsRes.status === 'fulfilled' && statsRes.value.data) {
+        const d = statsRes.value.data;
+        setStats({
+          todaySales: d.today_sales || d.todaySales || 0,
+          monthlySales: d.monthly_sales || d.monthlySales || 0,
+          totalProducts: d.total_products || d.totalProducts || 0,
+          totalCustomers: d.total_customers || d.totalCustomers || 0,
+        });
+      }
+      if (lowStockRes.status === 'fulfilled') setLowStock(lowStockRes.value.data || []);
+      if (salesRes.status === 'fulfilled') setRecentSales(salesRes.value.data || []);
+      if (topRes.status === 'fulfilled') setTopProducts(topRes.value.data || []);
     } catch (error) {
       console.error('Dashboard fetch error:', error);
     } finally {
@@ -81,7 +94,7 @@ const DashboardScreen = () => {
             <Text style={styles.sectionTitle}>Low Stock Alerts</Text>
           </View>
           {lowStock.slice(0, 5).map((item) => (
-            <View key={item._id || item.id} style={styles.lowStockItem}>
+            <View key={item.id} style={styles.lowStockItem}>
               <Text style={styles.lowStockName}>{item.name}</Text>
               <View style={[styles.lowStockBadge, { backgroundColor: COLORS.danger + '15' }]}>
                 <Text style={[styles.lowStockQty, { color: COLORS.danger }]}>{item.stock} left</Text>
@@ -97,14 +110,14 @@ const DashboardScreen = () => {
           <EmptyState icon="receipt-outline" message="No recent sales" />
         ) : (
           recentSales.map((sale) => (
-            <View key={sale._id || sale.id} style={styles.saleItem}>
+            <View key={sale.id} style={styles.saleItem}>
               <View style={styles.saleInfo}>
-                <Text style={styles.saleInvoice}>{sale.invoiceNumber || 'N/A'}</Text>
-                <Text style={styles.saleCustomer}>{sale.customer?.name || 'Walk-in'}</Text>
+                <Text style={styles.saleInvoice}>{sale.invoice_number || 'N/A'}</Text>
+                <Text style={styles.saleCustomer}>{sale.customers?.name || 'Walk-in'}</Text>
               </View>
               <View style={styles.saleRight}>
                 <Text style={styles.saleAmount}>{formatCurrency(sale.total)}</Text>
-                <Text style={styles.saleDate}>{formatDate(sale.createdAt || sale.date)}</Text>
+                <Text style={styles.saleDate}>{formatDate(sale.created_at || sale.date)}</Text>
               </View>
             </View>
           ))
@@ -115,13 +128,13 @@ const DashboardScreen = () => {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Top Selling Products</Text>
           {topProducts.map((item, index) => (
-            <View key={item._id || item.id || index} style={styles.topItem}>
+            <View key={item.id || index} style={styles.topItem}>
               <View style={styles.topRank}>
                 <Text style={styles.rankNumber}>{index + 1}</Text>
               </View>
               <View style={styles.topInfo}>
                 <Text style={styles.topName}>{item.name}</Text>
-                <Text style={styles.topSold}>{item.totalSold || item.quantity || 0} sold</Text>
+                <Text style={styles.topSold}>{item.total_sold || item.quantity || 0} sold</Text>
               </View>
             </View>
           ))}

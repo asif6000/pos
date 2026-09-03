@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { COLORS } from '../../utils/helpers';
 import SearchBar from '../../components/SearchBar';
 import LoadingSpinner from '../../components/LoadingSpinner';
@@ -15,8 +15,10 @@ const CustomersScreen = ({ navigation }) => {
 
   const fetchCustomers = async () => {
     try {
-      const res = await api.get('/customers');
-      setCustomers(res.data.customers || res.data || []);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase.from('customers').select('*').eq('owner_id', user.id);
+      setCustomers(data || []);
     } catch (error) {
       console.error('Fetch customers error:', error);
     } finally {
@@ -32,8 +34,9 @@ const CustomersScreen = ({ navigation }) => {
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
           try {
-            await api.delete(`/customers/${item._id || item.id}`);
-            setCustomers(customers.filter((c) => (c._id || c.id) !== (item._id || item.id)));
+            const { error } = await supabase.from('customers').delete().eq('id', item.id);
+            if (error) throw error;
+            setCustomers(customers.filter((c) => c.id !== item.id));
           } catch (error) {
             Alert.alert('Error', 'Failed to delete customer');
           }
@@ -72,7 +75,7 @@ const CustomersScreen = ({ navigation }) => {
       <FlatList
         data={filteredCustomers}
         renderItem={renderItem}
-        keyExtractor={(item) => item._id || item.id}
+        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={<EmptyState icon="people-outline" message="No customers found" />}
         onRefresh={fetchCustomers}

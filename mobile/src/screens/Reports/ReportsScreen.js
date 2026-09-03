@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { formatCurrency, COLORS } from '../../utils/helpers';
 import LoadingSpinner from '../../components/LoadingSpinner';
 
@@ -16,15 +16,45 @@ const ReportsScreen = () => {
 
   const fetchReport = async () => {
     try {
-      let endpoint = '/reports/';
-      if (activeTab === 'Daily') endpoint += 'daily';
-      else if (activeTab === 'Monthly') endpoint += 'monthly';
-      else if (activeTab === 'Top Products') endpoint += 'top-products';
-      else if (activeTab === 'Payment Methods') endpoint += 'payment-methods';
-      else if (activeTab === 'Category-wise') endpoint += 'category-wise';
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const ownerId = user.id;
 
-      const res = await api.get(endpoint);
-      setData(res.data);
+      let result = null;
+      const now = new Date();
+
+      if (activeTab === 'Daily') {
+        const { data: d } = await supabase.rpc('get_daily_report', {
+          p_owner_id: ownerId,
+          p_date: now.toISOString().split('T')[0],
+        });
+        result = d;
+      } else if (activeTab === 'Monthly') {
+        const { data: d } = await supabase.rpc('get_monthly_report', {
+          p_owner_id: ownerId,
+          p_year: now.getFullYear(),
+          p_month: now.getMonth() + 1,
+        });
+        result = d;
+      } else if (activeTab === 'Top Products') {
+        const { data: d } = await supabase.rpc('get_top_products', {
+          p_owner_id: ownerId,
+          p_limit: 10,
+        });
+        result = d ? { products: d } : null;
+      } else if (activeTab === 'Payment Methods') {
+        const { data: d } = await supabase.rpc('get_payment_methods_report', {
+          p_owner_id: ownerId,
+        });
+        result = d ? { methods: d } : null;
+      } else if (activeTab === 'Category-wise') {
+        const { data: d } = await supabase.rpc('get_category_report', {
+          p_owner_id: ownerId,
+        });
+        result = d ? { categories: d } : null;
+      }
+
+      setData(result);
     } catch (error) {
       console.error('Report fetch error:', error);
     } finally {
@@ -46,19 +76,19 @@ const ReportsScreen = () => {
   const renderDaily = () => (
     <View style={styles.reportCard}>
       <Text style={styles.reportTitle}>Today's Summary</Text>
-      <StatRow label="Total Sales" value={formatCurrency(data?.totalSales || 0)} />
-      <StatRow label="Transactions" value={data?.totalTransactions || 0} />
-      <StatRow label="Average Sale" value={formatCurrency(data?.averageSale || 0)} />
-      <StatRow label="Products Sold" value={data?.productsSold || 0} />
+      <StatRow label="Total Sales" value={formatCurrency(data?.total_sales || 0)} />
+      <StatRow label="Transactions" value={data?.total_transactions || 0} />
+      <StatRow label="Average Sale" value={formatCurrency(data?.average_sale || 0)} />
+      <StatRow label="Products Sold" value={data?.products_sold || 0} />
     </View>
   );
 
   const renderMonthly = () => (
     <View style={styles.reportCard}>
       <Text style={styles.reportTitle}>Monthly Summary</Text>
-      <StatRow label="Total Sales" value={formatCurrency(data?.totalSales || 0)} />
-      <StatRow label="Transactions" value={data?.totalTransactions || 0} />
-      <StatRow label="Average Sale" value={formatCurrency(data?.averageSale || 0)} />
+      <StatRow label="Total Sales" value={formatCurrency(data?.total_sales || 0)} />
+      <StatRow label="Transactions" value={data?.total_transactions || 0} />
+      <StatRow label="Average Sale" value={formatCurrency(data?.average_sale || 0)} />
       <StatRow label="Revenue Growth" value={`${data?.growth || 0}%`} />
     </View>
   );
@@ -67,15 +97,15 @@ const ReportsScreen = () => {
     <View style={styles.reportCard}>
       <Text style={styles.reportTitle}>Top Selling Products</Text>
       {(data?.products || data || []).slice(0, 10).map((item, index) => (
-        <View key={item._id || item.id || index} style={styles.reportItem}>
+        <View key={item.id || index} style={styles.reportItem}>
           <View style={styles.rankBadge}>
             <Text style={styles.rankText}>{index + 1}</Text>
           </View>
           <View style={styles.reportItemInfo}>
             <Text style={styles.reportItemName}>{item.name}</Text>
-            <Text style={styles.reportItemDetail}>{item.totalSold || item.quantity || 0} sold</Text>
+            <Text style={styles.reportItemDetail}>{item.total_sold || item.quantity || 0} sold</Text>
           </View>
-          <Text style={styles.reportItemValue}>{formatCurrency(item.revenue || (item.totalSold || 0) * (item.sellPrice || 0))}</Text>
+          <Text style={styles.reportItemValue}>{formatCurrency(item.revenue || (item.total_sold || 0) * (item.sell_price || 0))}</Text>
         </View>
       ))}
     </View>
@@ -85,10 +115,10 @@ const ReportsScreen = () => {
     <View style={styles.reportCard}>
       <Text style={styles.reportTitle}>Sales by Payment Method</Text>
       {(data?.methods || data || []).map((item, index) => (
-        <View key={item._id || item.method || index} style={styles.reportItem}>
+        <View key={item.method || item.id || index} style={styles.reportItem}>
           <View style={[styles.methodDot, { backgroundColor: COLORS.primary }]} />
           <View style={styles.reportItemInfo}>
-            <Text style={styles.reportItemName}>{item.method || item._id}</Text>
+            <Text style={styles.reportItemName}>{item.method || item.payment_method || 'Unknown'}</Text>
             <Text style={styles.reportItemDetail}>{item.count || item.transactions || 0} transactions</Text>
           </View>
           <Text style={styles.reportItemValue}>{formatCurrency(item.total || item.amount || 0)}</Text>
@@ -101,13 +131,13 @@ const ReportsScreen = () => {
     <View style={styles.reportCard}>
       <Text style={styles.reportTitle}>Sales by Category</Text>
       {(data?.categories || data || []).map((item, index) => (
-        <View key={item._id || item.category || index} style={styles.reportItem}>
+        <View key={item.id || item.category || index} style={styles.reportItem}>
           <Ionicons name="folder" size={20} color={COLORS.primary} />
           <View style={styles.reportItemInfo}>
-            <Text style={styles.reportItemName}>{item.name || item._id || 'Unknown'}</Text>
-            <Text style={styles.reportItemDetail}>{item.productCount || 0} products</Text>
+            <Text style={styles.reportItemName}>{item.name || item.category_name || 'Unknown'}</Text>
+            <Text style={styles.reportItemDetail}>{item.product_count || 0} products</Text>
           </View>
-          <Text style={styles.reportItemValue}>{formatCurrency(item.totalSales || item.total || 0)}</Text>
+          <Text style={styles.reportItemValue}>{formatCurrency(item.total_sales || item.total || 0)}</Text>
         </View>
       ))}
     </View>

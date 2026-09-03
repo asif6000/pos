@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, Modal, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { COLORS } from '../../utils/helpers';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import EmptyState from '../../components/EmptyState';
@@ -18,8 +18,10 @@ const CategoriesScreen = () => {
 
   const fetchCategories = async () => {
     try {
-      const res = await api.get('/categories');
-      setCategories(res.data.categories || res.data || []);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase.from('categories').select('*').eq('owner_id', user.id);
+      setCategories(data || []);
     } catch (error) {
       console.error('Fetch categories error:', error);
     } finally {
@@ -48,15 +50,20 @@ const CategoriesScreen = () => {
     }
     setSaving(true);
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
       if (editingCategory) {
-        await api.put(`/categories/${editingCategory._id || editingCategory.id}`, { name: categoryName.trim() });
+        const { error } = await supabase.from('categories').update({ name: categoryName.trim() }).eq('id', editingCategory.id);
+        if (error) throw error;
       } else {
-        await api.post('/categories', { name: categoryName.trim() });
+        const { error } = await supabase.from('categories').insert({ name: categoryName.trim(), owner_id: user.id, status: 'active' });
+        if (error) throw error;
       }
       setShowModal(false);
       fetchCategories();
     } catch (error) {
-      Alert.alert('Error', error.response?.data?.message || 'Failed to save category');
+      Alert.alert('Error', error.message || 'Failed to save category');
     } finally {
       setSaving(false);
     }
@@ -68,8 +75,9 @@ const CategoriesScreen = () => {
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
           try {
-            await api.delete(`/categories/${cat._id || cat.id}`);
-            setCategories(categories.filter((c) => (c._id || c.id) !== (cat._id || cat.id)));
+            const { error } = await supabase.from('categories').delete().eq('id', cat.id);
+            if (error) throw error;
+            setCategories(categories.filter((c) => c.id !== cat.id));
           } catch (error) {
             Alert.alert('Error', 'Failed to delete category');
           }
@@ -102,7 +110,7 @@ const CategoriesScreen = () => {
       <FlatList
         data={categories}
         renderItem={renderItem}
-        keyExtractor={(item) => item._id || item.id}
+        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={<EmptyState icon="folder-outline" message="No categories found" />}
         onRefresh={fetchCategories}

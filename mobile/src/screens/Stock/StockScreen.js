@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, Alert, TouchableOpacity, Modal, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { COLORS } from '../../utils/helpers';
 import SearchBar from '../../components/SearchBar';
 import LoadingSpinner from '../../components/LoadingSpinner';
@@ -20,8 +20,10 @@ const StockScreen = () => {
 
   const fetchProducts = async () => {
     try {
-      const res = await api.get('/products');
-      setProducts(res.data.products || res.data || []);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase.from('products').select('*').eq('owner_id', user.id);
+      setProducts(data || []);
     } catch (error) {
       console.error('Fetch stock error:', error);
     } finally {
@@ -49,29 +51,44 @@ const StockScreen = () => {
       return;
     }
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
       const newStock = adjustType === 'add' ? adjustProduct.stock + qty : adjustProduct.stock - qty;
       if (newStock < 0) {
         Alert.alert('Error', 'Stock cannot be negative');
         return;
       }
-      await api.put(`/products/${adjustProduct._id || adjustProduct.id}`, { stock: newStock });
+      const { error } = await supabase.from('products').update({ stock: newStock }).eq('id', adjustProduct.id);
+      if (error) throw error;
+
+      await supabase.from('stock_history').insert({
+        product_id: adjustProduct.id,
+        owner_id: user.id,
+        type: adjustType,
+        quantity: qty,
+        previous_stock: adjustProduct.stock,
+        new_stock: newStock,
+        reason: adjustType === 'add' ? 'Manual addition' : 'Manual removal',
+      });
+
       setProducts(products.map((p) =>
-        (p._id || p.id) === (adjustProduct._id || adjustProduct.id) ? { ...p, stock: newStock } : p
+        p.id === adjustProduct.id ? { ...p, stock: newStock } : p
       ));
       setAdjustModal(false);
       Alert.alert('Success', 'Stock adjusted');
     } catch (error) {
-      Alert.alert('Error', 'Failed to adjust stock');
+      Alert.alert('Error', error.message || 'Failed to adjust stock');
     }
   };
 
   const renderItem = ({ item }) => {
-    const isLow = item.stock <= (item.minStock || 0);
+    const isLow = item.stock <= (item.min_stock || 0);
     return (
       <View style={[styles.item, isLow && styles.lowStockItem]}>
         <View style={styles.itemInfo}>
           <Text style={styles.itemName}>{item.name}</Text>
-          <Text style={styles.itemMin}>Min: {item.minStock || 0}</Text>
+          <Text style={styles.itemMin}>Min: {item.min_stock || 0}</Text>
         </View>
         <View style={styles.itemRight}>
           <Text style={[styles.stockValue, isLow && { color: COLORS.danger }]}>{item.stock}</Text>
@@ -92,7 +109,7 @@ const StockScreen = () => {
       <FlatList
         data={filteredProducts}
         renderItem={renderItem}
-        keyExtractor={(item) => item._id || item.id}
+        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={<EmptyState icon="cube-outline" message="No products found" />}
         onRefresh={fetchProducts}

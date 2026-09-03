@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, StyleSheet, ScrollView, Alert, KeyboardAvoidingView, Platform } from 'react-native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { COLORS } from '../../utils/helpers';
 import Header from '../../components/Header';
 import Button from '../../components/Button';
@@ -26,16 +26,22 @@ const CustomerFormScreen = ({ navigation, route }) => {
     }
     setLoading(true);
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
       const data = { name: name.trim(), phone: phone.trim(), email: email.trim(), address: address.trim() };
       if (isEdit) {
-        await api.put(`/customers/${customer._id || customer.id}`, data);
+        const { error } = await supabase.from('customers').update(data).eq('id', customer.id);
+        if (error) throw error;
         Alert.alert('Success', 'Customer updated', [{ text: 'OK', onPress: () => navigation.goBack() }]);
       } else {
-        await api.post('/customers', data);
+        data.owner_id = user.id;
+        const { error } = await supabase.from('customers').insert(data);
+        if (error) throw error;
         Alert.alert('Success', 'Customer created', [{ text: 'OK', onPress: () => navigation.goBack() }]);
       }
     } catch (error) {
-      Alert.alert('Error', error.response?.data?.message || 'Failed to save customer');
+      Alert.alert('Error', error.message || 'Failed to save customer');
     } finally {
       setLoading(false);
     }

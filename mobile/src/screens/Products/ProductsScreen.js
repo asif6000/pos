@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../config/api';
+import { supabase } from '../../config/supabase';
 import { formatCurrency, COLORS } from '../../utils/helpers';
 import SearchBar from '../../components/SearchBar';
 import LoadingSpinner from '../../components/LoadingSpinner';
@@ -17,12 +17,16 @@ const ProductsScreen = ({ navigation }) => {
 
   const fetchData = async () => {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const ownerId = user.id;
+
       const [prodRes, catRes] = await Promise.allSettled([
-        api.get('/products'),
-        api.get('/categories'),
+        supabase.from('products').select('*, categories(name)').eq('owner_id', ownerId),
+        supabase.from('categories').select('*').eq('owner_id', ownerId),
       ]);
-      if (prodRes.status === 'fulfilled') setProducts(prodRes.value.data.products || prodRes.value.data || []);
-      if (catRes.status === 'fulfilled') setCategories(catRes.value.data.categories || catRes.value.data || []);
+      if (prodRes.status === 'fulfilled') setProducts(prodRes.value.data || []);
+      if (catRes.status === 'fulfilled') setCategories(catRes.value.data || []);
     } catch (error) {
       console.error('Products fetch error:', error);
     } finally {
@@ -38,8 +42,9 @@ const ProductsScreen = ({ navigation }) => {
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
           try {
-            await api.delete(`/products/${item._id || item.id}`);
-            setProducts(products.filter((p) => (p._id || p.id) !== (item._id || item.id)));
+            const { error } = await supabase.from('products').delete().eq('id', item.id);
+            if (error) throw error;
+            setProducts(products.filter((p) => p.id !== item.id));
           } catch (error) {
             Alert.alert('Error', 'Failed to delete product');
           }
@@ -50,7 +55,7 @@ const ProductsScreen = ({ navigation }) => {
 
   const filteredProducts = products.filter((p) => {
     const matchSearch = !search || p.name.toLowerCase().includes(search.toLowerCase()) || (p.barcode && p.barcode.includes(search));
-    const matchCat = !selectedCategory || (p.category?._id || p.category?.id || p.category) === selectedCategory;
+    const matchCat = !selectedCategory || p.category_id === selectedCategory;
     return matchSearch && matchCat;
   });
 
@@ -66,11 +71,11 @@ const ProductsScreen = ({ navigation }) => {
       <View style={styles.itemInfo}>
         <Text style={styles.itemName} numberOfLines={1}>{item.name}</Text>
         <Text style={styles.itemBarcode}>Barcode: {item.barcode || 'N/A'}</Text>
-        <Text style={styles.itemCategory}>{item.category?.name || 'Uncategorized'}</Text>
+        <Text style={styles.itemCategory}>{item.categories?.name || 'Uncategorized'}</Text>
       </View>
       <View style={styles.itemRight}>
-        <Text style={styles.itemPrice}>{formatCurrency(item.sellPrice)}</Text>
-        <Text style={[styles.itemStock, item.stock <= (item.minStock || 0) && { color: COLORS.danger }]}>
+        <Text style={styles.itemPrice}>{formatCurrency(item.sell_price)}</Text>
+        <Text style={[styles.itemStock, item.stock <= (item.min_stock || 0) && { color: COLORS.danger }]}>
           Stock: {item.stock}
         </Text>
       </View>
@@ -92,11 +97,11 @@ const ProductsScreen = ({ navigation }) => {
         </TouchableOpacity>
         {categories.map((cat) => (
           <TouchableOpacity
-            key={cat._id || cat.id}
-            style={[styles.filterChip, selectedCategory === (cat._id || cat.id) && styles.filterChipActive]}
-            onPress={() => setSelectedCategory(selectedCategory === (cat._id || cat.id) ? null : (cat._id || cat.id))}
+            key={cat.id}
+            style={[styles.filterChip, selectedCategory === cat.id && styles.filterChipActive]}
+            onPress={() => setSelectedCategory(selectedCategory === cat.id ? null : cat.id)}
           >
-            <Text style={[styles.filterText, selectedCategory === (cat._id || cat.id) && styles.filterTextActive]}>
+            <Text style={[styles.filterText, selectedCategory === cat.id && styles.filterTextActive]}>
               {cat.name}
             </Text>
           </TouchableOpacity>
@@ -106,7 +111,7 @@ const ProductsScreen = ({ navigation }) => {
       <FlatList
         data={filteredProducts}
         renderItem={renderItem}
-        keyExtractor={(item) => item._id || item.id}
+        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={<EmptyState icon="cube-outline" message="No products found" />}
         onRefresh={fetchData}
