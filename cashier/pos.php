@@ -242,6 +242,70 @@ include 'includes/header.php';
         color: var(--gray-500);
         text-align: center;
     }
+
+    @media (max-width: 1024px) {
+        .pos-container {
+            height: auto;
+        }
+        .pos-products {
+            height: auto;
+            min-height: 50vh;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .pos-page .content {
+            height: auto;
+            overflow: visible;
+            padding: 0.75rem;
+        }
+        .pos-container {
+            height: auto;
+        }
+        .pos-products {
+            height: auto;
+            min-height: 40vh;
+            padding: 0.75rem;
+        }
+        .pos-product-grid {
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 0.5rem;
+        }
+        .pos-search-wrapper::after {
+            display: none;
+        }
+        .pos-search-wrapper input {
+            padding-right: 0.875rem;
+        }
+        .pos-camera-btn {
+            width: 30px;
+            height: 30px;
+            font-size: 0.85rem;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .pos-page .content {
+            padding: 0.5rem;
+        }
+        .pos-products {
+            padding: 0.5rem;
+            min-height: 35vh;
+        }
+        .pos-product-grid {
+            grid-template-columns: repeat(auto-fill, minmax(85px, 1fr));
+            gap: 0.4rem;
+        }
+        .pos-product-card {
+            padding: 0.5rem;
+        }
+        .pos-product-name {
+            font-size: 0.75rem;
+        }
+        .pos-product-price {
+            font-size: 0.8rem;
+        }
+    }
 </style>
 
 <div class="pos-container">

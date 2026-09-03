@@ -1490,6 +1490,22 @@ textarea.form-control {
 
 /* Tablet & Below (1024px) */
 @media (max-width: 1024px) {
+    .sidebar {
+        transform: translateX(-100%);
+    }
+
+    .sidebar.open {
+        transform: translateX(0);
+    }
+
+    .main-content {
+        margin-left: 0;
+    }
+
+    .menu-toggle {
+        display: block;
+    }
+
     .pos-container {
         grid-template-columns: 1fr;
         height: auto;
@@ -1539,22 +1555,6 @@ textarea.form-control {
 
 /* Mobile (768px) */
 @media (max-width: 768px) {
-    .sidebar {
-        transform: translateX(-100%);
-    }
-
-    .sidebar.open {
-        transform: translateX(0);
-    }
-
-    .main-content {
-        margin-left: 0;
-    }
-
-    .menu-toggle {
-        display: block;
-    }
-
     .stats-grid {
         grid-template-columns: 1fr;
     }
@@ -1662,7 +1662,6 @@ textarea.form-control {
         padding: 0.5rem 0.75rem;
     }
 
-    /* POS mobile product grid */
     .pos-product-grid {
         grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
         gap: 0.5rem;
@@ -1685,7 +1684,6 @@ textarea.form-control {
         font-size: 0.875rem;
     }
 
-    /* Store sales hero */
     .store-sales-hero {
         flex-direction: column;
         text-align: center;
@@ -1711,7 +1709,6 @@ textarea.form-control {
         padding: 0.5rem 1rem 1rem;
     }
 
-    /* Print labels / barcode grid */
     .barcode-grid {
         grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     }
