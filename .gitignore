@@ -7,6 +7,11 @@ sessions/sess_*
 *.txt
 error_log
 new
+temp_*
+config/migration_exchange.php
+config/run_superadmin_setup.php
+sessions/.htaccess
+uploads/
 
 # Embedded git repos
 pos/
