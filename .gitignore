@@ -1,0 +1,23 @@
+# Sessions
+sessions/sess_*
+
+# Temp files
+*.py
+*_tmp*
+*.txt
+error_log
+new
+
+# Embedded git repos
+pos/
+
+# Sensitive config (uncomment if you want to exclude)
+# config/db.php
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# IDE files
+.vscode/
+.idea/
