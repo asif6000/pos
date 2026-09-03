@@ -16,6 +16,17 @@ uploads/
 # Embedded git repos
 pos/
 
+# Node.js
+node_modules/
+.env
+*.log
+
+# Expo/React Native
+mobile/.expo/
+mobile/ios/
+mobile/android/
+mobile/web-build/
+
 # Sensitive config (uncomment if you want to exclude)
 # config/db.php
 
