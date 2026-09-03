@@ -663,7 +663,7 @@ include 'includes/header.php';
                     <hr style="margin: 0.75rem 0; border-color: var(--border-color,#e5e7eb);">
                     <p style="font-weight:600; margin-bottom:0.75rem; color: var(--text-secondary, #6b7280); font-size:0.85rem; text-transform:uppercase; letter-spacing:0.05em;">Salary Breakdown</p>
 
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+                    <div class="form-grid">
                         <div class="form-group" style="margin-bottom:0;">
                             <label class="form-label">Base Salary (per period)</label>
                             <input type="text" id="paySalaryBase" class="form-control" readonly
@@ -676,7 +676,7 @@ include 'includes/header.php';
                         </div>
                     </div>
 
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; margin-top:0.75rem;">
+                    <div class="form-grid" style="margin-top:0.75rem;">
                         <div class="form-group" style="margin-bottom:0;">
                             <label class="form-label">Total Days in Month</label>
                             <input type="text" id="payTotalDays" class="form-control" readonly
@@ -695,7 +695,7 @@ include 'includes/header.php';
                                style="background:var(--bg-secondary,#f9fafb); font-weight:600; color: #059669;">
                     </div>
 
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+                    <div class="form-grid">
                         <div class="form-group" style="margin-bottom:0;">
                             <label class="form-label">Bonus (৳)</label>
                             <input type="number" name="bonus" id="payBonus" class="form-control"
@@ -710,7 +710,7 @@ include 'includes/header.php';
                         </div>
                     </div>
 
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; margin-top:0.75rem;">
+                    <div class="form-grid" style="margin-top:0.75rem;">
                         <div class="form-group" style="margin-bottom:0;">
                             <label class="form-label">Already Paid This Period</label>
                             <input type="text" id="payPaid" class="form-control" readonly

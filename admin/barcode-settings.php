@@ -87,7 +87,7 @@ include 'includes/header.php';
                 <small class="form-text text-muted">This will appear prominently in bold, larger font at the top of printed labels</small>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+            <div class="form-grid">
                 <!-- Margins -->
                 <div>
                     <h4 style="margin-bottom: 1rem; border-bottom: 1px solid #eee; padding-bottom: 0.5rem;">Margins
@@ -157,7 +157,7 @@ include 'includes/header.php';
                 <div style="grid-column: span 2;">
                     <h4 style="margin-bottom: 1rem; border-bottom: 1px solid #eee; padding-bottom: 0.5rem;">Distances
                         (Inches)</h4>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                    <div class="form-grid">
                         <div class="form-group">
                             <label class="form-label required">Distance between two rows</label>
                             <input type="number" name="row_distance" class="form-control" step="0.0001" min="0"

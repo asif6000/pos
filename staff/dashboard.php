@@ -570,7 +570,7 @@ include 'includes/header.php';
     <div class="sec-head">
         <h3><i class="fas fa-chart-line" style="color:#10b981; margin-right:0.5rem;"></i>Business Profit Overview (মোট লাভ)</h3>
     </div>
-    <div class="salary-grid" style="grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));">
+    <div class="salary-grid">
         <div class="salary-item" style="border-left:3px solid #10b981;">
             <div class="si-label">আজকের বিক্রয়</div>
             <div class="si-value" style="color:#059669;"><?php echo formatCurrency($bizProfit['today_sales']); ?></div>

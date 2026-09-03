@@ -216,7 +216,7 @@ include 'includes/header.php';
     </div>
 </div>
 
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
+<div class="two-col-equal" style="margin-top: 1.5rem;">
     <!-- Top Selling Products -->
     <?php
     // Top selling products (deducting returns)
@@ -243,6 +243,7 @@ include 'includes/header.php';
             <h3 class="card-title"><i class="fas fa-trophy text-warning"></i> Top Selling Products (Net)</h3>
         </div>
         <div class="card-body" style="padding: 0;">
+            <div class="table-responsive">
             <table class="table">
                 <thead>
                     <tr>
@@ -267,6 +268,7 @@ include 'includes/header.php';
                     <?php endif; ?>
                 </tbody>
             </table>
+            </div>
         </div>
     </div>
     
@@ -276,6 +278,7 @@ include 'includes/header.php';
             <h3 class="card-title"><i class="fas fa-credit-card"></i> Payment Methods</h3>
         </div>
         <div class="card-body" style="padding: 0;">
+            <div class="table-responsive">
             <table class="table">
                 <thead>
                     <tr>
@@ -310,11 +313,12 @@ include 'includes/header.php';
                     <?php endif; ?>
                 </tbody>
             </table>
+            </div>
         </div>
     </div>
 </div>
 
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
+<div class="two-col-equal" style="margin-top: 1.5rem;">
     <!-- Sales by Category -->
     <?php
     // Sales by category (deducting returns)
@@ -342,6 +346,7 @@ include 'includes/header.php';
             <h3 class="card-title"><i class="fas fa-tags"></i> Sales by Category (Net)</h3>
         </div>
         <div class="card-body" style="padding: 0;">
+            <div class="table-responsive">
             <table class="table">
                 <thead>
                     <tr>
@@ -364,6 +369,7 @@ include 'includes/header.php';
                     <?php endif; ?>
                 </tbody>
             </table>
+            </div>
         </div>
     </div>
     

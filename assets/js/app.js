@@ -73,18 +73,54 @@ document.addEventListener('DOMContentLoaded', function() {
 function initSidebar() {
     const menuToggle = document.getElementById('menuToggle');
     const sidebar = document.getElementById('sidebar');
-    
+
     if (menuToggle && sidebar) {
-        menuToggle.addEventListener('click', function() {
-            sidebar.classList.toggle('open');
+        // Create overlay element
+        let overlay = document.querySelector('.sidebar-overlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.className = 'sidebar-overlay';
+            document.body.appendChild(overlay);
+        }
+
+        function openSidebar() {
+            sidebar.classList.add('open');
+            overlay.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeSidebar() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('active');
+            document.body.style.overflow = '';
+        }
+
+        menuToggle.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (sidebar.classList.contains('open')) {
+                closeSidebar();
+            } else {
+                openSidebar();
+            }
         });
-        
+
+        overlay.addEventListener('click', function() {
+            closeSidebar();
+        });
+
         // Close sidebar when clicking outside
         document.addEventListener('click', function(e) {
-            if (sidebar.classList.contains('open') && 
-                !sidebar.contains(e.target) && 
+            if (sidebar.classList.contains('open') &&
+                !sidebar.contains(e.target) &&
                 !menuToggle.contains(e.target)) {
-                sidebar.classList.remove('open');
+                closeSidebar();
+            }
+        });
+
+        // Close sidebar on window resize to desktop
+        window.addEventListener('resize', function() {
+            if (window.innerWidth > 768 && sidebar.classList.contains('open')) {
+                closeSidebar();
             }
         });
     }

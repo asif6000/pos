@@ -82,7 +82,7 @@ include 'includes/header.php';
 </div>
 
 <!-- Stats -->
-<div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
+<div class="stats-grid three-col">
     <div class="stat-card">
         <div class="stat-icon green">
             <i class="fas fa-money-bill-wave"></i>
@@ -120,6 +120,7 @@ include 'includes/header.php';
         <h3 class="card-title"><i class="fas fa-history"></i> Purchase History</h3>
     </div>
     <div class="card-body" style="padding: 0;">
+        <div class="table-responsive">
         <table class="table">
             <thead>
                 <tr>
@@ -156,6 +157,7 @@ include 'includes/header.php';
                 <?php endif; ?>
             </tbody>
         </table>
+        </div>
     </div>
 </div>
 

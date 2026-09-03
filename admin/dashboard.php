@@ -1171,7 +1171,7 @@ usort($storeRows, function ($x, $y) { return $y['all'] <=> $x['all']; });
                 <a href="expense.php" class="btn btn-sm btn-outline">Open</a>
             </div>
             <div class="panel-body">
-                <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:0.75rem; margin-bottom:1rem;">
+                <div class="three-col" style="gap:0.75rem; margin-bottom:1rem;">
                     <div style="background:#ecfdf5; border-radius:0.75rem; padding:0.7rem; text-align:center;">
                         <div class="mini-num">Sales</div>
                         <strong style="color:#059669;"><?php echo formatCurrency($allTimeSales['total']); ?></strong>

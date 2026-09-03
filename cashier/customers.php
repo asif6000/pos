@@ -88,36 +88,38 @@ include 'includes/header.php';
 <!-- Customers -->
 <div class="card">
     <div class="card-body" style="padding: 0;">
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Phone</th>
-                    <th>Address</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (empty($customers)): ?>
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
                     <tr>
-                        <td colspan="3" class="text-center text-muted">No customers found</td>
+                        <th>Name</th>
+                        <th>Phone</th>
+                        <th>Address</th>
                     </tr>
-                <?php else: ?>
-                    <?php foreach ($customers as $customer): ?>
+                </thead>
+                <tbody>
+                    <?php if (empty($customers)): ?>
                         <tr>
-                            <td><strong>
-                                    <?php echo sanitize($customer['name']); ?>
-                                </strong></td>
-                            <td>
-                                <?php echo sanitize($customer['phone'] ?: '-'); ?>
-                            </td>
-                            <td class="text-muted">
-                                <?php echo sanitize($customer['address'] ?: '-'); ?>
-                            </td>
+                            <td colspan="3" class="text-center text-muted">No customers found</td>
                         </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </tbody>
-        </table>
+                    <?php else: ?>
+                        <?php foreach ($customers as $customer): ?>
+                            <tr>
+                                <td><strong>
+                                        <?php echo sanitize($customer['name']); ?>
+                                    </strong></td>
+                                <td>
+                                    <?php echo sanitize($customer['phone'] ?: '-'); ?>
+                                </td>
+                                <td class="text-muted">
+                                    <?php echo sanitize($customer['address'] ?: '-'); ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 

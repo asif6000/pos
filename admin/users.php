@@ -145,6 +145,7 @@ include 'includes/header.php';
 
 <div class="card">
     <div class="card-body" style="padding: 0;">
+        <div class="table-responsive">
         <table class="table">
             <thead>
                 <tr>
@@ -211,6 +212,7 @@ include 'includes/header.php';
                 <?php endforeach; ?>
             </tbody>
         </table>
+        </div>
     </div>
 </div>
 

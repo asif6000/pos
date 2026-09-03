@@ -112,7 +112,7 @@ include 'includes/header.php';
 </div>
 
 <!-- Summary Cards -->
-<div class="stats-grid" style="margin-bottom: 1.5rem; grid-template-columns: repeat(2, 1fr);">
+<div class="stats-grid two-col-equal" style="margin-bottom: 1.5rem;">
     <div class="stat-card">
         <div class="stat-icon green">
             <i class="fas fa-money-bill-wave"></i>

@@ -117,6 +117,7 @@ include 'includes/header.php';
 <!-- Customers Table -->
 <div class="card">
     <div class="card-body" style="padding: 0;">
+        <div class="table-responsive">
         <table class="table">
             <thead>
                 <tr>
@@ -176,6 +177,7 @@ include 'includes/header.php';
                 <?php endif; ?>
             </tbody>
         </table>
+        </div>
     </div>
 </div>
 

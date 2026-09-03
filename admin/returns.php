@@ -289,7 +289,7 @@ $stmtMonth->execute([$user['owner_id']]);
 $monthReturns = $stmtMonth->fetch();
 ?>
 
-<div class="stats-grid" style="grid-template-columns: repeat(2, 1fr); margin-bottom: 1.5rem;">
+<div class="stats-grid two-col-equal" style="margin-bottom: 1.5rem;">
     <div class="stat-card">
         <div class="stat-icon yellow">
             <i class="fas fa-undo"></i>
@@ -326,6 +326,7 @@ $monthReturns = $stmtMonth->fetch();
         <h3 class="card-title"><i class="fas fa-list"></i> Recent Returns</h3>
     </div>
     <div class="card-body" style="padding: 0;">
+        <div class="table-responsive">
         <table class="table">
             <thead>
                 <tr>
@@ -393,6 +394,7 @@ $monthReturns = $stmtMonth->fetch();
                 <?php endif; ?>
             </tbody>
         </table>
+        </div>
     </div>
 </div>
 
@@ -498,7 +500,7 @@ $monthReturns = $stmtMonth->fetch();
                     </div>
 
                     <!-- Payment/Refund Method -->
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+                    <div class="form-grid" style="margin-top: 1rem;">
                         <div class="form-group">
                             <label class="form-label required">Refund Method</label>
                             <select name="refund_method" class="form-control" required>

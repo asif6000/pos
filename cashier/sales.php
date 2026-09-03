@@ -54,7 +54,7 @@ include 'includes/header.php';
 ?>
 
 <!-- Summary -->
-<div class="stats-grid" style="margin-bottom: 1.5rem; grid-template-columns: repeat(2, 1fr);">
+<div class="stats-grid two-col-equal" style="margin-bottom: 1.5rem;">
     <div class="stat-card">
         <div class="stat-icon green">
             <i class="fas fa-money-bill-wave"></i>
@@ -78,7 +78,7 @@ include 'includes/header.php';
 <!-- Filters -->
 <div class="card" style="margin-bottom: 1.5rem;">
     <div class="card-body">
-        <form method="GET" style="display: flex; gap: 1rem; align-items: flex-end;">
+        <form method="GET" style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
             <div class="form-group" style="margin-bottom: 0;">
                 <label class="form-label">From</label>
                 <input type="date" name="date_from" class="form-control" value="<?php echo $dateFrom; ?>">
@@ -95,59 +95,61 @@ include 'includes/header.php';
 <!-- Sales Table -->
 <div class="card">
     <div class="card-body" style="padding: 0;">
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Invoice</th>
-                    <th>Date</th>
-                    <th>Customer</th>
-                    <th>Discount</th>
-                    <th>Total</th>
-                    <th>Payment</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (empty($sales)): ?>
-                    <tr><td colspan="7" class="text-center text-muted">No sales found</td></tr>
-                <?php else: ?>
-                    <?php foreach ($sales as $sale): ?>
-                        <tr data-sale-id="<?php echo $sale['id']; ?>" style="background: <?php echo $sale['printed'] ? '#f0fdf4' : ''; ?>">
-                            <td><strong><?php echo sanitize($sale['invoice_number']); ?>
-                                        <?php if (!$sale['printed']): ?>
-                                            <i class="fas fa-circle print-dot" style="color: #ef4444; font-size: 0.5rem; vertical-align: middle;" title="Not Printed"></i>
-                                        <?php else: ?>
-                                            <i class="fas fa-circle print-dot" style="color: #22c55e; font-size: 0.5rem; vertical-align: middle;" title="Printed"></i>
-                                        <?php endif; ?></strong></td>
-                            <td><?php echo date('h:i A', strtotime($sale['created_at'])); ?></td>
-                            <td><?php echo sanitize($sale['customer_name'] ?? 'Walk-in'); ?></td>
-                            <td>
-                                <?php $saleDiscount = (float) ($sale['discount_amount'] ?? 0); ?>
-                                <?php if ($saleDiscount > 0): ?>
-                                    <span style="color: #10b981; font-weight: 600;">
-                                        -<?php echo formatCurrency($saleDiscount); ?>
-                                        <?php if (!empty($sale['discount_percent'])): ?>
-                                            <small style="color: #6b7280; font-weight: 400;">(<?php echo rtrim(rtrim(number_format($sale['discount_percent'], 2), '0'), '.'); ?>%)</small>
-                                        <?php endif; ?>
-                                    </span>
-                                <?php else: ?>
-                                    <span class="text-muted">-</span>
-                                <?php endif; ?>
-                            </td>
-                            <td><strong><?php echo formatCurrency($sale['total']); ?></strong></td>
-                            <td><span class="badge badge-primary"><?php echo ucfirst($sale['payment_method']); ?></span></td>
-                            <td><span class="badge badge-success"><?php echo ucfirst($sale['payment_status']); ?></span></td>
-                            <td>
-                                <button class="btn btn-sm btn-outline" onclick="viewInvoice(<?php echo $sale['id']; ?>)" title="View Invoice">
-                                    <i class="fas fa-eye"></i>
-                                </button>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </tbody>
-        </table>
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Invoice</th>
+                        <th>Date</th>
+                        <th>Customer</th>
+                        <th>Discount</th>
+                        <th>Total</th>
+                        <th>Payment</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($sales)): ?>
+                        <tr><td colspan="7" class="text-center text-muted">No sales found</td></tr>
+                    <?php else: ?>
+                        <?php foreach ($sales as $sale): ?>
+                            <tr data-sale-id="<?php echo $sale['id']; ?>" style="background: <?php echo $sale['printed'] ? '#f0fdf4' : ''; ?>">
+                                <td><strong><?php echo sanitize($sale['invoice_number']); ?>
+                                            <?php if (!$sale['printed']): ?>
+                                                <i class="fas fa-circle print-dot" style="color: #ef4444; font-size: 0.5rem; vertical-align: middle;" title="Not Printed"></i>
+                                            <?php else: ?>
+                                                <i class="fas fa-circle print-dot" style="color: #22c55e; font-size: 0.5rem; vertical-align: middle;" title="Printed"></i>
+                                            <?php endif; ?></strong></td>
+                                <td><?php echo date('h:i A', strtotime($sale['created_at'])); ?></td>
+                                <td><?php echo sanitize($sale['customer_name'] ?? 'Walk-in'); ?></td>
+                                <td>
+                                    <?php $saleDiscount = (float) ($sale['discount_amount'] ?? 0); ?>
+                                    <?php if ($saleDiscount > 0): ?>
+                                        <span style="color: #10b981; font-weight: 600;">
+                                            -<?php echo formatCurrency($saleDiscount); ?>
+                                            <?php if (!empty($sale['discount_percent'])): ?>
+                                                <small style="color: #6b7280; font-weight: 400;">(<?php echo rtrim(rtrim(number_format($sale['discount_percent'], 2), '0'), '.'); ?>%)</small>
+                                            <?php endif; ?>
+                                        </span>
+                                    <?php else: ?>
+                                        <span class="text-muted">-</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td><strong><?php echo formatCurrency($sale['total']); ?></strong></td>
+                                <td><span class="badge badge-primary"><?php echo ucfirst($sale['payment_method']); ?></span></td>
+                                <td><span class="badge badge-success"><?php echo ucfirst($sale['payment_status']); ?></span></td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline" onclick="viewInvoice(<?php echo $sale['id']; ?>)" title="View Invoice">
+                                        <i class="fas fa-eye"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 

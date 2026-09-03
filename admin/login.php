@@ -380,6 +380,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .powered span { display: none; }
             .back-home span { display: none; }
         }
+        @media (max-width: 480px) {
+            body { padding: 12px; }
+            .card { padding: 1.8rem 1.2rem 1.5rem; border-radius: 18px; }
+            .card h2 { font-size: 1.4rem; }
+            .btn-submit { padding: 13px; }
+            .orb { display: none; }
+        }
     </style>
 </head>
 <body>

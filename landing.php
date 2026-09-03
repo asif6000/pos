@@ -1560,6 +1560,10 @@ $whatsappUrl = 'https://wa.me/' . $whatsappNumber . '?text=' . urlencode($whatsa
         }
 
         /* ─── RESPONSIVE ─── */
+        .how-to-use-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+        }
         @media (max-width: 1024px) {
             .navbar { padding: 14px 30px; }
             .navbar-links { display: none; }
@@ -1581,6 +1585,7 @@ $whatsappUrl = 'https://wa.me/' . $whatsappNumber . '?text=' . urlencode($whatsa
             .pricing-section { padding: 80px 30px; }
             .footer-top { grid-template-columns: 1fr 1fr; }
             .cta-section { padding: 80px 30px; }
+            .how-to-use-grid { grid-template-columns: 1fr 1fr; }
         }
 
         /* Mobile menu overlay */
@@ -1632,6 +1637,7 @@ $whatsappUrl = 'https://wa.me/' . $whatsappNumber . '?text=' . urlencode($whatsa
             .footer-bottom { flex-direction: column; gap: 12px; text-align: center; }
             .cta-box { padding: 40px 24px; }
             .cta-buttons { flex-direction: column; align-items: center; }
+            .how-to-use-grid { grid-template-columns: 1fr; }
         }
 
         /* ── Tutorial / Demo Section ── */
@@ -2391,7 +2397,7 @@ $whatsappUrl = 'https://wa.me/' . $whatsappNumber . '?text=' . urlencode($whatsa
         <p style="color: #64748b; font-size: 1.05rem; max-width: 600px; margin: 16px auto 0;">Start managing your business in three simple steps. Our system is designed to be intuitive and fast.</p>
     </div>
     
-    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; max-width: 1100px; margin: 0 auto;">
+    <div class="how-to-use-grid" style="gap: 30px; max-width: 1100px; margin: 0 auto;">
         <!-- Step 1 -->
         <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 20px; padding: 40px 30px; text-align: center; position: relative;" class="animate-on-scroll">
             <div style="width: 64px; height: 64px; background: #eff6ff; color: #3b82f6; border-radius: 16px; display: flex; align-items: center; justify-content: center; font-size: 1.8rem; margin: 0 auto 24px;">

@@ -91,40 +91,42 @@ include 'includes/header.php';
 <!-- Products Table -->
 <div class="card">
     <div class="card-body" style="padding: 0;">
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Product</th>
-                    <th>Barcode</th>
-                    <th>Category</th>
-                    <th>Price</th>
-                    <th>Stock</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (empty($products)): ?>
-                    <tr><td colspan="5" class="text-center text-muted">No products found</td></tr>
-                <?php else: ?>
-                    <?php foreach ($products as $product): ?>
-                        <tr>
-                            <td><strong><?php echo sanitize($product['name']); ?></strong></td>
-                            <td><?php echo $product['barcode'] ?? '-'; ?></td>
-                            <td><?php echo sanitize($product['category_name'] ?? 'Uncategorized'); ?></td>
-                            <td><strong><?php echo formatCurrency($product['sell_price']); ?></strong></td>
-                            <td>
-                                <?php if ($product['current_stock'] <= $product['min_stock']): ?>
-                                    <span class="badge badge-<?php echo $product['current_stock'] == 0 ? 'danger' : 'warning'; ?>">
-                                        <?php echo $product['current_stock']; ?>
-                                    </span>
-                                <?php else: ?>
-                                    <span class="badge badge-success"><?php echo $product['current_stock']; ?></span>
-                                <?php endif; ?>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </tbody>
-        </table>
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Product</th>
+                        <th>Barcode</th>
+                        <th>Category</th>
+                        <th>Price</th>
+                        <th>Stock</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($products)): ?>
+                        <tr><td colspan="5" class="text-center text-muted">No products found</td></tr>
+                    <?php else: ?>
+                        <?php foreach ($products as $product): ?>
+                            <tr>
+                                <td><strong><?php echo sanitize($product['name']); ?></strong></td>
+                                <td><?php echo $product['barcode'] ?? '-'; ?></td>
+                                <td><?php echo sanitize($product['category_name'] ?? 'Uncategorized'); ?></td>
+                                <td><strong><?php echo formatCurrency($product['sell_price']); ?></strong></td>
+                                <td>
+                                    <?php if ($product['current_stock'] <= $product['min_stock']): ?>
+                                        <span class="badge badge-<?php echo $product['current_stock'] == 0 ? 'danger' : 'warning'; ?>">
+                                            <?php echo $product['current_stock']; ?>
+                                        </span>
+                                    <?php else: ?>
+                                        <span class="badge badge-success"><?php echo $product['current_stock']; ?></span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 

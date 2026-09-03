@@ -111,7 +111,7 @@ include 'includes/header.php';
     </div>
 <?php endif; ?>
 
-<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem;">
+<div class="two-col">
 
     <!-- Left Column: System Settings -->
     <div>
@@ -136,7 +136,7 @@ include 'includes/header.php';
                             rows="2"><?php echo sanitize($settings['shop_address'] ?? ''); ?></textarea>
                     </div>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-grid">
                         <div class="form-group">
                             <label class="form-label">Phone Number</label>
                             <input type="text" name="shop_phone" class="form-control"

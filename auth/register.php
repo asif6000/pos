@@ -409,6 +409,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .auth-illustration { display: none; }
             .auth-form-container { padding: 2rem; }
         }
+        @media (max-width: 480px) {
+            body { padding: 10px; }
+            .auth-wrapper { border-radius: 8px; min-height: auto; }
+            .auth-form-container { padding: 1.5rem; }
+            .auth-form-container h2 { font-size: 1.4rem; }
+            .btn-primary { padding: 12px; font-size: 0.95rem; }
+        }
     </style>
 </head>
 

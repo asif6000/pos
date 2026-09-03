@@ -484,7 +484,7 @@ include 'includes/header.php';
                 <input type="hidden" name="action" id="formAction" value="add">
                 <input type="hidden" name="id" id="productId" value="">
 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="form-grid">
                     <div class="form-group" style="grid-column: span 2;">
                         <label class="form-label required">Product Name</label>
                         <input type="text" name="name" id="productName" class="form-control" required>
@@ -653,7 +653,7 @@ include 'includes/header.php';
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+            <div class="form-grid" style="margin-top: 1rem;">
                 <div class="form-group" style="margin-bottom: 0;">
                     <label class="form-label">Sticker Width (in)</label>
                     <input type="number" id="stickerWidth" class="form-control"
@@ -666,7 +666,7 @@ include 'includes/header.php';
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+            <div class="form-grid" style="margin-top: 1rem;">
                 <div class="form-group" style="margin-bottom: 0;">
                     <label class="form-label">Paper Width (in)</label>
                     <input type="number" id="paperWidth" class="form-control" value="<?php echo $defaultPaperWidth; ?>"
@@ -679,7 +679,7 @@ include 'includes/header.php';
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+            <div class="form-grid" style="margin-top: 1rem;">
                 <div class="form-group" style="margin-bottom: 0;">
                     <label class="form-label">Labels per Product</label>
                     <input type="number" id="labelQuantity" class="form-control" value="1" min="1" max="100">

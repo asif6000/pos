@@ -212,6 +212,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .back-link { display: inline-block; margin-top: 1rem; color: #6b7280; text-decoration: none; font-size: .85rem; }
         .back-link:hover { color: #f43f5e; }
         @media (max-width: 640px) { .checkout-body { flex-direction: column; } }
+        @media (max-width: 480px) {
+            body { padding: 10px; }
+            .checkout-wrapper { border-radius: 8px; }
+            .checkout-header { padding: 1rem; }
+            .checkout-header h1 { font-size: 1.15rem; }
+            .checkout-body { padding: 1rem; gap: 1.2rem; }
+            .plan-summary { min-width: auto; }
+            .payment-box { min-width: auto; }
+            .pay-options { grid-template-columns: 1fr; }
+            .btn-primary { padding: 12px; font-size: 0.95rem; }
+        }
     </style>
 </head>
 

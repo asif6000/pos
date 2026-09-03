@@ -181,6 +181,7 @@ include 'includes/header.php';
 <!-- Roles Table -->
 <div class="card" style="margin-bottom: 2rem;">
     <div class="card-body" style="padding: 0;">
+        <div class="table-responsive">
         <table class="table">
             <thead>
                 <tr>
@@ -241,6 +242,7 @@ include 'includes/header.php';
                 <?php endforeach; ?>
             </tbody>
         </table>
+        </div>
     </div>
 </div>
 
@@ -353,7 +355,7 @@ include 'includes/header.php';
                         <div style="font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #6b7280; margin-bottom: 0.5rem; padding-bottom: 4px; border-bottom: 1px solid #e5e7eb;">
                             <?php echo $groupName; ?>
                         </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
+                        <div class="form-grid" style="gap: 0.4rem;">
                             <?php foreach ($groupPerms as $permKey => $permMeta): ?>
                                 <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.5rem; border-radius: 6px; cursor: pointer; transition: background 0.15s;" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background=''">
                                     <input type="checkbox" name="permissions[]" value="<?php echo $permKey; ?>"

@@ -81,6 +81,10 @@ include 'includes/header.php';
         margin-bottom: 0;
         padding-bottom: 0;
     }
+    @media (max-width: 768px) {
+        .transfer-form-grid { grid-template-columns: 1fr !important; }
+        .transfer-item-row { grid-template-columns: 1fr !important; }
+    }
 </style>
 
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
@@ -96,6 +100,7 @@ include 'includes/header.php';
 <!-- Transfers List -->
 <div class="card">
     <div class="card-body" style="padding: 0;">
+        <div class="table-responsive">
         <table class="table">
             <thead>
                 <tr>
@@ -138,6 +143,7 @@ include 'includes/header.php';
                 <?php endif; ?>
             </tbody>
         </table>
+        </div>
     </div>
 </div>
 
