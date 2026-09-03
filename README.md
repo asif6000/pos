@@ -74,24 +74,13 @@ A clean, fast, and professional Point of Sale (POS) system built for small and m
 ## 📂 Project Structure
 
 ```
-/pos-system
-├── /assets
-│   ├── /css
-│   │   └── style.css
-│   ├── /js
-│   │   └── app.js
-│   └── /images
-├── /config
-│   ├── db.php
-│   └── database.sql
-├── /auth
-│   ├── login.php
-│   └── register.php
-├── /admin
-│   ├── /api
+├── /admin                    # Admin panel
+│   ├── /api                  # AJAX API endpoints
 │   │   ├── process-sale.php
 │   │   ├── get-invoice.php
-│   │   └── stock-history.php
+│   │   ├── stock-history.php
+│   │   ├── process-transfer.php
+│   │   └── ...
 │   ├── /includes
 │   │   ├── header.php
 │   │   └── footer.php
@@ -102,21 +91,55 @@ A clean, fast, and professional Point of Sale (POS) system built for small and m
 │   ├── customers.php
 │   ├── customer-history.php
 │   ├── sales.php
+│   ├── returns.php
 │   ├── stock.php
+│   ├── transfers.php
+│   ├── cashbook.php
+│   ├── expense.php
 │   ├── reports.php
+│   ├── discount-report.php
 │   ├── users.php
-│   └── settings.php
-├── /cashier
+│   ├── staff.php
+│   ├── roles.php
+│   ├── stores.php
+│   ├── plans.php
+│   ├── pricing.php
+│   ├── subscription.php
+│   ├── settings.php
+│   ├── payment-settings.php
+│   ├── barcode-settings.php
+│   ├── voucher-settings.php
+│   ├── vouchers.php
+│   ├── print-labels.php
+│   └── login.php
+├── /cashier                  # Cashier panel
 │   ├── /includes
-│   │   ├── header.php
-│   │   └── footer.php
 │   ├── pos.php
 │   ├── sales.php
 │   ├── customers.php
 │   └── products.php
-├── index.php
+├── /staff                    # Staff panel
+│   ├── /includes
+│   └── dashboard.php
+├── /auth                     # Authentication
+│   ├── login.php
+│   ├── register.php
+│   └── checkout.php
+├── /config                   # Configuration
+│   ├── db.php                # Database connection & helpers
+│   ├── database.sql          # Main database schema
+│   └── migration_*.sql       # Migration scripts
+├── /assets
+│   ├── /css
+│   │   └── style.css
+│   ├── /js
+│   │   └── app.js
+│   ├── /fonts
+│   └── /img
+├── index.php                 # Entry point
+├── landing.php               # Landing page
 ├── logout.php
-└── README.md
+└── schema.sql
 ```
 
 ## 🚀 Installation
@@ -124,36 +147,77 @@ A clean, fast, and professional Point of Sale (POS) system built for small and m
 ### Requirements
 - PHP 7.4 or higher
 - MySQL 5.7 or higher
-- Apache/Nginx web server
-- Shared hosting supported
+- Apache/Nginx web server (with `mod_rewrite` enabled)
+- Shared hosting also supported
 
-### Steps
+### Local Setup (XAMPP / WAMP / Laragon)
 
-1. **Upload Files**
-   Upload all files to your web hosting or local server (e.g., `htdocs`, `www`, or `public_html`)
+1. **Clone or Download**
+   ```bash
+   git clone https://github.com/asif6000/pos.git
+   ```
+   Or download the ZIP and extract into your server root (`htdocs`, `www`, etc.)
 
 2. **Create Database**
-   - Create a new MySQL database (e.g., `pos_system`)
-   - Import the SQL file: `config/database.sql`
+   - Open phpMyAdmin (`http://localhost/phpmyadmin`)
+   - Create a new database, e.g. `pos_system`
+   - Select the database → click **Import** → choose `config/database.sql` → click **Go**
 
 3. **Configure Database Connection**
-   Edit `config/db.php` and update these values:
+   Edit `config/db.php` and update:
    ```php
    define('DB_HOST', 'localhost');
    define('DB_NAME', 'pos_system');
-   define('DB_USER', 'your_username');
-   define('DB_PASS', 'your_password');
+   define('DB_USER', 'root');
+   define('DB_PASS', '');
    ```
 
-4. **Access the System**
-   Open your browser and navigate to:
-   - Local: `http://localhost/pos/`
-   - Online: `https://yourdomain.com/pos/`
+4. **Apply Migrations**
+   In phpMyAdmin, run the following SQL files **in order**:
+   - `config/migration_admin.sql`
+   - `config/migration_superadmin.sql`
+   - `config/migration_permissions.sql`
+   - `config/migration_returns.sql`
 
-5. **Login**
-   - **Default Admin Account:**
-     - Email: `admin@pos.com`
-     - Password: `admin123`
+5. **Set Folder Permissions**
+   - Make sure the `sessions/` folder is writable by the web server
+   - Create an `uploads/` folder if you plan to upload product images
+
+6. **Access the System**
+   - Local: `http://localhost/smart/`
+   - Online: `https://yourdomain.com/`
+
+7. **Default Login**
+   | Role  | Email            | Password  |
+   |-------|------------------|-----------|
+   | Admin | `admin@pos.com`  | `admin123`|
+
+### Live Server (cPanel / Shared Hosting)
+
+1. Upload all files to `public_html/` or a subdirectory via **File Manager** or **FTP**
+2. Create a MySQL database and user from **cPanel → MySQL Databases**
+3. Import `config/database.sql` via **phpMyAdmin**
+4. Edit `config/db.php` with your live database credentials
+5. Run the migration SQL files (same as step 4 above)
+6. Ensure `sessions/` is writable (`chmod 755`)
+7. Visit your domain to access the system
+
+### Post-Installation
+
+- Go to **Admin → Settings** to configure shop name, address, and currency
+- Go to **Admin → Plans** to set up subscription plans (SaaS mode)
+- Create additional admin/cashier users from **Admin → Users**
+- Set up roles and permissions from **Admin → Roles**
+
+## ❓ Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Blank page / 500 error | Enable error reporting in `php.ini`: `display_errors = On` |
+| Database connection failed | Check `config/db.php` credentials |
+| Styles not loading | Make sure `assets/` folder is accessible via browser |
+| Session errors | Ensure `sessions/` folder exists and is writable |
+| Migration errors | Run migration SQL files in the correct order |
 
 ## 🔐 Security Features
 
