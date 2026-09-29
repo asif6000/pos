@@ -39,6 +39,10 @@ app.use('/api/returns', returnRoutes);
 app.use('/api/transfers', transferRoutes);
 app.use('/api/expenses', expenseRoutes);
 
+app.get('/', (req, res) => {
+  res.json({ success: true, message: 'POS Server is running', health: '/api/health' });
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ success: true, message: 'POS Server is running' });
 });
