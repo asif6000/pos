@@ -6,6 +6,7 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use(express.static(require('path').join(__dirname, 'public')));
 
 const authRoutes = require('./routes/auth');
 const productRoutes = require('./routes/products');
@@ -40,7 +41,7 @@ app.use('/api/transfers', transferRoutes);
 app.use('/api/expenses', expenseRoutes);
 
 app.get('/', (req, res) => {
-  res.json({ success: true, message: 'POS Server is running', health: '/api/health' });
+  res.sendFile(require('path').join(__dirname, 'public', 'index.html'));
 });
 
 app.get('/api/health', (req, res) => {

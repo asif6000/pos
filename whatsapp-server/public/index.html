@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b1220" />
+  <title>AVA POS · Operations dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">A</div><div><strong>AVA POS</strong><span>Retail operations</span></div></div>
+      <nav aria-label="Main navigation">
+        <p class="nav-label">Workspace</p>
+        <a class="nav-item active" href="#overview"><span>▦</span>Overview</a>
+        <a class="nav-item" href="#sales"><span>◈</span>Sales</a>
+        <a class="nav-item" href="#inventory"><span>◇</span>Inventory</a>
+        <a class="nav-item" href="#customers"><span>◎</span>Customers</a>
+        <p class="nav-label">Manage</p>
+        <a class="nav-item" href="#reports"><span>◫</span>Reports</a>
+        <a class="nav-item" href="#settings"><span>⚙</span>Settings</a>
+      </nav>
+      <div class="sidebar-footer"><div class="store-avatar">M</div><div><strong>Mirpur Store</strong><span>Active store</span></div><span class="dots">•••</span></div>
+    </aside>
+    <main class="main-content">
+      <header class="topbar"><div><p class="eyebrow">Monday, 29 September 2026</p><h1>Good morning, admin</h1></div><div class="top-actions"><button class="icon-button" aria-label="Notifications">♧<i></i></button><button class="profile"><span class="profile-avatar">AD</span><span class="profile-copy"><strong>Admin</strong><small>Super admin</small></span><span>⌄</span></button></div></header>
+      <section class="hero-card"><div><span class="status-pill"><i></i> All systems operational</span><h2>Run your store<br><em>with confidence.</em></h2><p>Track performance, manage stock, and keep every sale moving from one calm workspace.</p><button class="primary-button" onclick="location.href='/api/health'">View system status <span>↗</span></button></div><div class="hero-art"><div class="ring ring-one"></div><div class="ring ring-two"></div><div class="floating-card"><span>Today&apos;s revenue</span><strong>৳ 84,250</strong><small>↗ 12.8% from yesterday</small></div></div></section>
+      <section class="metrics" aria-label="Store metrics"><article class="metric-card"><div class="metric-icon blue">৳</div><div><span>Today&apos;s sales</span><strong>৳ 84,250</strong><small class="up">↗ 12.8%</small></div></article><article class="metric-card"><div class="metric-icon violet">⌁</div><div><span>Transactions</span><strong>248</strong><small class="up">↗ 8.4%</small></div></article><article class="metric-card"><div class="metric-icon amber">▤</div><div><span>Products in stock</span><strong>1,284</strong><small class="down">↘ 2.1%</small></div></article><article class="metric-card"><div class="metric-icon green">◎</div><div><span>New customers</span><strong>36</strong><small class="up">↗ 18.2%</small></div></article></section>
+      <section class="content-grid"><article class="panel sales-panel"><div class="panel-heading"><div><h3>Sales overview</h3><p>Revenue performance across the week</p></div><select aria-label="Sales period"><option>This week</option><option>This month</option></select></div><div class="chart"><div class="chart-y"><span>30k</span><span>20k</span><span>10k</span><span>0</span></div><div class="chart-area"><div class="grid-line one"></div><div class="grid-line two"></div><div class="grid-line three"></div><svg viewBox="0 0 680 190" role="img" aria-label="Sales trend"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#7384ff" stop-opacity=".28"/><stop offset="1" stop-color="#7384ff" stop-opacity="0"/></linearGradient></defs><path d="M0 143 C45 125 66 142 104 115 S166 88 198 107 S245 126 278 91 S329 65 364 92 S412 78 446 45 S502 65 530 52 S588 22 620 40 S660 22 680 18 L680 190 L0 190Z" fill="url(#fill)"/><path d="M0 143 C45 125 66 142 104 115 S166 88 198 107 S245 126 278 91 S329 65 364 92 S412 78 446 45 S502 65 530 52 S588 22 620 40 S660 22 680 18" fill="none" stroke="#8490ff" stroke-width="3" stroke-linecap="round"/></svg><div class="chart-x"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div></div></div></article><article class="panel quick-panel"><div class="panel-heading"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-actions"><button><span class="qa blue">＋</span><span><strong>New sale</strong><small>Start a checkout</small></span><b>→</b></button><button><span class="qa violet">⌁</span><span><strong>Add product</strong><small>Update your catalog</small></span><b>→</b></button><button><span class="qa amber">▤</span><span><strong>Stock transfer</strong><small>Move between stores</small></span><b>→</b></button></div></article></section>
+      <section class="bottom-grid"><article class="panel"><div class="panel-heading"><div><h3>Recent transactions</h3><p>Your latest store activity</p></div><a class="view-link" href="#sales">View all →</a></div><div class="transactions"><div class="transaction"><span class="transaction-icon blue">S</span><span><strong>Sale #INV-2048</strong><small>Today, 11:42 AM · Cash</small></span><strong class="amount">৳ 12,450</strong><span class="paid">Paid</span></div><div class="transaction"><span class="transaction-icon violet">S</span><span><strong>Sale #INV-2047</strong><small>Today, 11:18 AM · bKash</small></span><strong class="amount">৳ 4,280</strong><span class="paid">Paid</span></div><div class="transaction"><span class="transaction-icon amber">S</span><span><strong>Sale #INV-2046</strong><small>Today, 10:56 AM · Card</small></span><strong class="amount">৳ 8,900</strong><span class="paid">Paid</span></div></div></article><article class="panel stock-panel"><div class="panel-heading"><div><h3>Stock alerts</h3><p>Items that need attention</p></div><a class="view-link" href="#inventory">View inventory →</a></div><div class="stock-item"><span class="product-thumb coffee">☕</span><span><strong>Arabica Coffee 250g</strong><small>SKU: CF-250-AR</small></span><span class="stock-low">8 left</span></div><div class="stock-item"><span class="product-thumb headphones">◉</span><span><strong>Wireless Headphones</strong><small>SKU: WH-220-BK</small></span><span class="stock-low">12 left</span></div></article></section>
+    </main>
+  </div>
+</body>
+</html>
