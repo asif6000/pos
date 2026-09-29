@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * POS System - Login Page
  * Handles user authentication
@@ -7,15 +7,24 @@
 require_once '../config/db.php';
 startSecureSession();
 
-// Redirect if already logged in
+// Redirect if already logged in.
+//
+// Permission-based, the same as the successful-login branch below. It used to
+// compare the role against the literals 'admin' and 'staff' and send everyone
+// else to cashier/pos.php, so an account that had already signed in and then
+// reopened this page was moved somewhere different from where signing in had
+// put it - and one holding no POS permission was redirected into a page that
+// immediately refused it.
 if (isLoggedIn()) {
     $user = getCurrentUser();
-    if ($user['role'] === 'admin') {
-        redirect('../admin/dashboard.php');
-    } elseif ($user['role'] === 'staff') {
+    if (staffProfileExists($user)) {
         redirect('../staff/dashboard.php');
     }
-    redirect('../cashier/pos.php');
+    $landing = defaultLandingPage();
+    if ($landing !== null) {
+        redirect('../admin/' . $landing);
+    }
+    redirect('../admin/dashboard.php');
 }
 
 $error = '';
@@ -45,14 +54,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $_SESSION['owner_id'] = $user['owner_id'];
                     $_SESSION['last_activity'] = time();
 
-                    // Redirect based on role
-                    if ($user['role'] === 'admin') {
-                        redirect('../admin/dashboard.php');
-                    } elseif ($user['role'] === 'staff') {
+                    // Where to land, decided by permission rather than by role name.
+                    //
+                    // This used to compare the role against the literals 'admin' and
+                    // 'staff', so a manager, an owner or any custom role fell through
+                    // to cashier/pos.php however much it had been granted, and a role
+                    // called 'staff' landed on a page that errors unless the account
+                    // also has a staff record. The Roles page and the menu disagreed
+                    // because they were reading different things.
+                    //
+                    // A real staff member still gets their own page first - it is a
+                    // personal view, not a menu - but only if a staff record exists.
+                    if (staffProfileExists($user)) {
                         redirect('../staff/dashboard.php');
-                    } else {
-                        redirect('../cashier/pos.php');
                     }
+                    $landing = defaultLandingPage();
+                    if ($landing !== null) {
+                        redirect('../admin/' . $landing);
+                    }
+                    // Nothing in this app is open to this role. Send them somewhere
+                    // that can say so rather than to a page that will also refuse.
+                    redirect('../admin/dashboard.php');
                 } else {
                     $error = 'Your account is inactive. Please contact administrator.';
                 }
@@ -75,8 +97,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../assets/css/hind-siliguri.css">
+    <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="icon" type="image/png" href="<?php echo htmlspecialchars(assetUrl('assets/img/ava_logo.png'), ENT_QUOTES, 'UTF-8'); ?>">
     <style>
         body {
             background-color: #fce7f3; /* Soft pink background */
@@ -407,14 +430,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </form>
 
             <div class="auth-footer">
-                New here? <a href="register.php">Create an Account</a>
+                New here? 
             </div>
         </div>
     </div>
 
     <div style="position: absolute; top: 30px; right: 50px; z-index: 10; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; font-family: 'Inter', sans-serif; pointer-events: none;">
         <span style="color: #9ca3af; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 3px; margin-bottom: 2px;">Powered By</span>
-        <img src="../assets/img/ava_logo.png" alt="AVA IT Solution" style="height: 45px; margin-top: 5px; pointer-events: auto;">
+        <img src="<?php echo htmlspecialchars(assetUrl('assets/img/ava_logo.png'), ENT_QUOTES, 'UTF-8'); ?>" alt="AVA IT Solution" style="height: 45px; margin-top: 5px; pointer-events: auto;">
     </div>
 </body>
 

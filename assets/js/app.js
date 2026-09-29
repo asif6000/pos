@@ -12,6 +12,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
 /**
  * Initialize sidebar toggle for mobile
+ *
+ * The class is "open", not "active" - assets/css/style.css slides the panel in
+ * with `.sidebar.open { transform: translateX(0) }`, and there is no `.active`
+ * rule for the sidebar anywhere. Toggling a class the stylesheet does not know
+ * would have looked correct in the source and done nothing on the phone.
  */
 function initSidebar() {
     const menuToggle = document.getElementById('menuToggle');
@@ -67,12 +72,20 @@ function initFullscreen() {
 
 /**
  * Format number as currency
- * @param {number} amount 
- * @param {string} symbol 
+ *
+ * No symbol. The shop asked for amounts to be shown as plain numbers, and the
+ * PHP side (config/db.php) was changed to match - but this JavaScript copy had
+ * its own default of'' hardcoded in the parameter list, so anything rendered
+ * client side still carried one. Two definitions of"the same" formatter is
+ * exactly how the two drifted apart in the first place.
+ *
+ * @param {number} amount
+ * @param {string} symbol pass one to show a symbol; empty by default
  * @returns {string}
  */
-function formatCurrency(amount, symbol = '৳') {
-    return symbol + ' ' + parseFloat(amount).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+function formatCurrency(amount, symbol = '') {
+    const n = parseFloat(amount).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return symbol ? symbol + ' ' + n : n;
 }
 
 /**

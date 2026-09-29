@@ -1,0 +1,23 @@
+{
+  "name": "pos-whatsapp-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WhatsApp Web bridge (QR login) for POS Marketing module",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "agent": "node agent.js",
+    "qr": "node qr-login.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "qrcode": "^1.5.4",
+    "whatsapp-web.js": "^1.26.0"
+  },
+  "allowScripts": {
+    "puppeteer@24.38.0": true
+  }
+}

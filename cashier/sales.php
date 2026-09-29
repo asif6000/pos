@@ -16,11 +16,18 @@ if (!isLoggedIn()) {
 
 define('PAGE_TITLE', 'My Sales');
 
-$protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-$baseUrl = $protocol . '://' . ($_SERVER['HTTP_HOST'] ?? '') . rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/');
-
 $db = getDB();
 $user = getCurrentUser();
+
+// Add printed column if missing (safe migration)
+try {
+    $cols = $db->query("SHOW COLUMNS FROM sales LIKE 'printed'")->fetchAll();
+    if (empty($cols)) {
+        $db->exec("ALTER TABLE sales ADD COLUMN printed TINYINT(1) NOT NULL DEFAULT 0 AFTER payment_status");
+    }
+} catch (PDOException $e) {
+    // Column may already exist
+}
 
 // Filters
 $dateFrom = sanitize($_GET['date_from'] ?? date('Y-m-d'));
@@ -91,6 +98,7 @@ include 'includes/header.php';
                     <th>Invoice</th>
                     <th>Date</th>
                     <th>Customer</th>
+                    <th>Discount</th>
                     <th>Total</th>
                     <th>Payment</th>
                     <th>Status</th>
@@ -99,13 +107,31 @@ include 'includes/header.php';
             </thead>
             <tbody>
                 <?php if (empty($sales)): ?>
-                    <tr><td colspan="6" class="text-center text-muted">No sales found</td></tr>
+                    <tr><td colspan="7" class="text-center text-muted">No sales found</td></tr>
                 <?php else: ?>
                     <?php foreach ($sales as $sale): ?>
-                        <tr>
-                            <td><strong><?php echo sanitize($sale['invoice_number']); ?></strong></td>
+                        <tr data-sale-id="<?php echo $sale['id']; ?>" style="background: <?php echo $sale['printed'] ? '#f0fdf4' : ''; ?>">
+                            <td><strong><?php echo sanitize($sale['invoice_number']); ?>
+                                        <?php if (!$sale['printed']): ?>
+                                            <i class="fas fa-circle print-dot" style="color: #ef4444; font-size: 0.5rem; vertical-align: middle;" title="Not Printed"></i>
+                                        <?php else: ?>
+                                            <i class="fas fa-circle print-dot" style="color: #22c55e; font-size: 0.5rem; vertical-align: middle;" title="Printed"></i>
+                                        <?php endif; ?></strong></td>
                             <td><?php echo date('h:i A', strtotime($sale['created_at'])); ?></td>
                             <td><?php echo sanitize($sale['customer_name'] ?? 'Walk-in'); ?></td>
+                            <td>
+                                <?php $saleDiscount = (float) ($sale['discount_amount'] ?? 0); ?>
+                                <?php if ($saleDiscount > 0): ?>
+                                    <span style="color: #10b981; font-weight: 600;">
+                                        -<?php echo formatCurrency($saleDiscount); ?>
+                                        <?php if (!empty($sale['discount_percent'])): ?>
+                                            <small style="color: #6b7280; font-weight: 400;">(<?php echo rtrim(rtrim(number_format($sale['discount_percent'], 2), '0'), '.'); ?>%)</small>
+                                        <?php endif; ?>
+                                    </span>
+                                <?php else: ?>
+                                    <span class="text-muted">-</span>
+                                <?php endif; ?>
+                            </td>
                             <td><strong><?php echo formatCurrency($sale['total']); ?></strong></td>
                             <td><span class="badge badge-primary"><?php echo ucfirst($sale['payment_method']); ?></span></td>
                             <td><span class="badge badge-success"><?php echo ucfirst($sale['payment_status']); ?></span></td>
@@ -143,9 +169,30 @@ include 'includes/header.php';
     </div>
 </div>
 
-<script src="<?php echo $baseUrl; ?>/assets/js/jsbarcode.min.js"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
 <script>
+    let currentPrintSaleId = null;
+
+    function markAsPrinted() {
+        if (currentPrintSaleId) {
+            fetch('../admin/api/mark-printed.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: currentPrintSaleId })
+            }).then(() => {
+                const row = document.querySelector(`tr[data-sale-id="${currentPrintSaleId}"]`);
+                if (row) {
+                    row.style.background = '#f0fdf4';
+                    const dot = row.querySelector('.print-dot');
+                    if (dot) { dot.style.color = '#22c55e'; dot.title = 'Printed'; }
+                }
+            });
+            currentPrintSaleId = null;
+        }
+    }
+
     async function viewInvoice(saleId) {
+        currentPrintSaleId = saleId;
         document.getElementById('invoiceModal').classList.add('active');
         try {
             const response = await fetch('../admin/api/get-invoice.php?id=' + saleId);
@@ -439,6 +486,7 @@ include 'includes/header.php';
     }
 
     document.getElementById('printBtn').addEventListener('click', async () => {
+        markAsPrinted();
         const content = document.getElementById('printableInvoice');
         if (!content) return;
         
@@ -467,7 +515,7 @@ include 'includes/header.php';
         <html>
         <head>
             <title>Invoice</title>
-            <link rel="stylesheet" href="<?php echo $baseUrl; ?>/assets/css/hind-siliguri.css">
+            <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
             <style>
                 body { font-family: 'Hind Siliguri', monospace; font-size: 12px; margin: 0; padding: 10px; }
                 #printableInvoice * { font-weight: 900 !important; color: #000 !important; }
@@ -476,7 +524,7 @@ include 'includes/header.php';
                 table { width: 100%; border-collapse: collapse; }
                 th, td { padding: 2px 0; }
             </style>
-            <script src="<?php echo $baseUrl; ?>\/assets\/js\/jsbarcode.min.js"><\/script>
+            <script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"><\/script>
         </head>
         <body>${printHTML}</body>
         </html>

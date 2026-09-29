@@ -45,9 +45,16 @@ $shopName = $settings['shop_name'] ?? 'POS System';
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../assets/css/hind-siliguri.css">
+    <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="../assets/css/style.css">
+    <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/style.css'), ENT_QUOTES, 'UTF-8'); ?>">
+    <!--
+        Declared so the browser stops asking for /favicon.ico and getting a 404.
+        It only falls back to that path when no icon is named, and the 404 shows
+        up in the console on every single page - looking like a broken build
+        rather than a missing decoration.
+    -->
+    <link rel="icon" type="image/png" href="<?php echo htmlspecialchars(assetUrl('assets/img/ava_logo.png'), ENT_QUOTES, 'UTF-8'); ?>">
 </head>
 
 <body>
@@ -79,13 +86,20 @@ $shopName = $settings['shop_name'] ?? 'POS System';
                     <?php endif; ?>
                 </div>
 
-                <?php if (hasPermission('products') || hasPermission('categories') || hasPermission('stock') || hasPermission('transfers')): ?>
+                <?php if (hasPermission('products') || hasPermission('categories') || hasPermission('stock') || hasPermission('transfers') || hasPermission('variables')): ?>
                 <div class="nav-section">
                     <div class="nav-section-title">Inventory</div>
                     <?php if (hasPermission('products')): ?>
                     <a href="products.php" class="nav-item <?php echo $currentPage === 'products' ? 'active' : ''; ?>">
                         <i class="fas fa-box"></i>
                         <span>Products</span>
+                    </a>
+                    <?php endif; ?>
+                    <?php if (hasPermission('variables')): ?>
+                    <a href="variables.php"
+                        class="nav-item <?php echo $currentPage === 'variables' ? 'active' : ''; ?>">
+                        <i class="fas fa-sliders-h"></i>
+                        <span>Variable Name</span>
                     </a>
                     <?php endif; ?>
                     <?php if (hasPermission('categories')): ?>
@@ -130,6 +144,10 @@ $shopName = $settings['shop_name'] ?? 'POS System';
                         <i class="fas fa-chart-bar"></i>
                         <span>Reports</span>
                     </a>
+                    <a href="discount-report.php" class="nav-item <?php echo $currentPage === 'discount-report' ? 'active' : ''; ?>">
+                        <i class="fas fa-percent"></i>
+                        <span>Discount Report</span>
+                    </a>
                     <?php endif; ?>
                     <?php if (hasPermission('cashbook')): ?>
                     <a href="expense.php" class="nav-item <?php echo $currentPage === 'expense' ? 'active' : ''; ?>">
@@ -140,7 +158,7 @@ $shopName = $settings['shop_name'] ?? 'POS System';
                 </div>
                 <?php endif; ?>
 
-                <?php if (hasPermission('customers') || hasPermission('users') || hasPermission('stores') || hasPermission('roles') || hasPermission('settings') || hasPermission('barcode_settings') || hasPermission('vouchers')): ?>
+                <?php if (hasPermission('customers') || hasPermission('users') || hasPermission('stores') || hasPermission('roles') || hasPermission('settings') || hasPermission('barcode_settings') || hasPermission('vouchers') || hasPermission('marketing')): ?>
                 <div class="nav-section">
                     <div class="nav-section-title">Management</div>
                     <?php if (hasPermission('customers')): ?>
@@ -148,6 +166,17 @@ $shopName = $settings['shop_name'] ?? 'POS System';
                         class="nav-item <?php echo $currentPage === 'customers' ? 'active' : ''; ?>">
                         <i class="fas fa-users"></i>
                         <span>Customers</span>
+                    </a>
+                    <a href="google-contacts.php"
+                        class="nav-item <?php echo $currentPage === 'google-contacts' ? 'active' : ''; ?>">
+                        <i class="fab fa-google" style="color: #4285F4;"></i>
+                        <span>Google Contacts</span>
+                    </a>
+                    <?php endif; ?>
+                    <?php if (hasPermission('marketing')): ?>
+                    <a href="marketing.php" class="nav-item <?php echo $currentPage === 'marketing' ? 'active' : ''; ?>">
+                        <i class="fas fa-bullhorn" style="color: #25D366;"></i>
+                        <span>Marketing</span>
                     </a>
                     <?php endif; ?>
                     <?php if (hasPermission('users')): ?>

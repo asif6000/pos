@@ -4,9 +4,9 @@
  * Returns invoice details for viewing/printing
  */
 
-header('Content-Type: application/json');
+header;
 
-require_once '../../config/db.php';
+require_once'../../config/db.php';
 startSecureSession();
 
 if (!isLoggedIn()) {
@@ -83,10 +83,10 @@ try {
             'coupon_status' => $settings['coupon_status'] ?? '0',
             'coupon_title' => $settings['coupon_title'] ?? 'SMART COLLECTION MONTHLY LUCKY COUPON',
             'coupon_subtitle' => $settings['coupon_subtitle'] ?? 'প্রতিটি কেনাকাটায় নিশ্চিত Lucky Entry Coupon!',
-            'coupon_prize_1' => $settings['coupon_prize_1'] ?? '🥇 ৳৫,০০০ Shopping Voucher — ১ জন',
-            'coupon_prize_2' => $settings['coupon_prize_2'] ?? '🥈 ৳৩,০০০ Shopping Voucher — ১ জন',
-            'coupon_prize_3' => $settings['coupon_prize_3'] ?? '🥉 ৳২,০০০ Shopping Voucher — ১ জন',
-            'coupon_prize_4' => $settings['coupon_prize_4'] ?? '🎁 ৳৫০০ Shopping Voucher — ১০ জন',
+            'coupon_prize_1' => $settings['coupon_prize_1'] ?? '🥇 ৫,০০০ Shopping Voucher — ১ জন',
+            'coupon_prize_2' => $settings['coupon_prize_2'] ?? '🥈 ৩,০০০ Shopping Voucher — ১ জন',
+            'coupon_prize_3' => $settings['coupon_prize_3'] ?? '🥉 ২,০০০ Shopping Voucher — ১ জন',
+            'coupon_prize_4' => $settings['coupon_prize_4'] ?? '🎁 ৫০০ Shopping Voucher — ১০ জন',
             'coupon_prize_5' => $settings['coupon_prize_5'] ?? '👕 Premium T-Shirt — ১০ জন',
             'coupon_total_winners' => $settings['coupon_total_winners'] ?? 'মোট বিজয়ী: ২৩ জন',
             'coupon_announcement' => $settings['coupon_announcement'] ?? '📅 প্রতি মাসের ১ তারিখ রাত ৮:০০ টায় Smart Collection-এর অফিসিয়াল Facebook Live-এ বিজয়ী ঘোষণা করা হবে।'

@@ -19,8 +19,15 @@ if (hasRole('cashier')) {
 define('PAGE_TITLE', 'Products');
 
 $db = getDB();
+$user = getCurrentUser();
 
 // Get categories - Filter by owner
+//
+// $user was read on this line before it was assigned, eleven lines further down.
+// PHP treated the undefined variable as null, so this became
+// "owner_id = NULL", which matches no row, and the category dropdown was always
+// empty - with no error anywhere to say so. getCurrentUser() is called once,
+// here, before the first use.
 $stmt = $db->prepare("SELECT id, name FROM categories WHERE status = 'active' AND owner_id = ? ORDER BY name");
 $stmt->execute([$user['owner_id']]);
 $categories = $stmt->fetchAll();
@@ -29,7 +36,6 @@ $categories = $stmt->fetchAll();
 $search = sanitize($_GET['search'] ?? '');
 $category = (int)($_GET['category'] ?? 0);
 
-$user = getCurrentUser();
 $store_id = $_SESSION['store_id'] ?? 0;
 if (!$store_id) {
     $stmtFallback = $db->query("SELECT id FROM stores WHERE status = 'active' LIMIT 1");

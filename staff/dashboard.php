@@ -4,7 +4,7 @@
  * Shows the logged-in staff member their salary and payment information
  */
 
-require_once '../config/db.php';
+require_once'../config/db.php';
 startSecureSession();
 
 if (!isLoggedIn()) {
@@ -28,14 +28,64 @@ $stmt->execute([$user['id'], $owner_id]);
 $member = $stmt->fetch();
 
 if (!$member) {
-    include 'includes/header.php';
+    // An account with the staff role but no staff record - made on the Users page
+    // rather than the Staff page. This page is that person's own payroll view and
+    // has nothing to show for them.
+    //
+    // It used to greet them with an error and leave them there, and when no
+    // permission at all was ticked it had nowhere to send them either. Now it keeps
+    // the menu, so whatever this role can open is one click away, and says plainly
+    // what is missing and who can add it. Redirecting away was what made this
+    // confusing: you land somewhere that is not the page you asked about.
+    $landing = defaultLandingPage();
+    $canSeeApp = ($landing !== null);
+    include'includes/header.php';
     ?>
-    <div class="alert alert-danger">
-        <i class="fas fa-exclamation-circle"></i>
-        <span>Your staff profile could not be found. Please contact your administrator.</span>
+    <div class="alert alert-warning">
+        <i class="fas fa-user-clock"></i>
+        <span>
+            <strong>Apnar staff profile nai.</strong>
+            Apnar account ache, kintu Staff page e apnar naam add hoy nai - tai
+            ei page e apnar salary, bonus ba payment history dekhay na.
+        </span>
     </div>
+
+    <div class="card" style="margin-bottom:1.5rem;">
+        <div class="card-body">
+            <h3 style="margin-top:0;"><i class="fas fa-user-plus"></i> Ki korte hobe</h3>
+            <p>Apnar admin ke bolun<strong>Staff</strong> page e apnar email diye
+                apnake add korte. Ei page e thik ei jaygay apni staff hisebe listed hobe.</p>
+            <p class="text-muted" style="margin-bottom:0;">
+                Staff page theke add korle apnar account-ei link hoye jabe - notun
+                password banate holei hobe na.
+            </p>
+        </div>
+    </div>
+
+    <?php if ($canSeeApp): ?>
+    <div class="card">
+        <div class="card-body">
+            <p class="text-muted" style="margin-bottom:0.6rem;">
+                Apni ei jinish gulo korte paren, side menu te dekhchen:
+            </p>
+            <a href="../admin/<?php echo $landing; ?>" class="btn btn-primary">
+                <i class="fas fa-arrow-right"></i> <?php echo sanitize(ucfirst(str_replace('.php', '', $landing))); ?>
+            </a>
+        </div>
+    </div>
+    <?php else: ?>
+    <div class="card">
+        <div class="card-body">
+            <p class="text-muted" style="margin-bottom:0;">
+                Apnar role e ekhon kono permission nai, tai ei app er kono page
+                khola jay na. Admin ke Roles &amp; Permissions page e apnar role er
+                tick box gulo dekhate bolun.
+            </p>
+        </div>
+    </div>
+    <?php endif; ?>
     <?php
-    include 'includes/footer.php';
+    include'includes/footer.php';
     exit;
 }
 
@@ -45,17 +95,16 @@ $stmt->execute([$member['id']]);
 $payments = $stmt->fetchAll();
 
 // Period boundaries
-$monthStart = date('Y-m-01');
-$monthEnd = date('Y-m-t');
-$weekStart = date('Y-m-d', strtotime('monday this week'));
-$weekEnd = date('Y-m-d', strtotime('sunday this week'));
+$monthStart = date;
+$monthEnd = date;
+$weekStart = date('Y-m-d', strtotime);
+$weekEnd = date('Y-m-d', strtotime);
 
 // Period totals
 $stmt = $db->prepare("SELECT
     COALESCE((SELECT SUM(amount) FROM staff_payments sp WHERE sp.staff_id = ? AND sp.payment_date BETWEEN ? AND ?), 0) as paid_month,
     COALESCE((SELECT SUM(amount) FROM staff_payments sp WHERE sp.staff_id = ? AND sp.payment_date BETWEEN ? AND ?), 0) as paid_week,
-    COALESCE((SELECT SUM(amount) FROM staff_payments sp WHERE sp.staff_id = ?), 0) as total_paid
-");
+    COALESCE((SELECT SUM(amount) FROM staff_payments sp WHERE sp.staff_id = ?), 0) as total_paid");
 $stmt->execute([$member['id'], $monthStart, $monthEnd, $member['id'], $weekStart, $weekEnd, $member['id']]);
 $totals = $stmt->fetch();
 
@@ -76,9 +125,9 @@ $stmt->execute([$member['id']]);
 $monthRows = $stmt->fetchAll();
 $monthRows = array_reverse($monthRows);
 
-// Current daily rate
-$totalDays = (int)date('t');
-$dailyRate = $totalDays > 0 ? round((float)$member['salary'] / $totalDays, 2) : 0;
+// Current daily rate (monthly = 30 days, weekly = 7 days)
+$totalDays = $member['salary_type'] === 'weekly' ? 7 : 30;
+$dailyRate = $totalDays> 0 ? round((float)$member['salary'] / $totalDays, 2) : 0;
 
 $salaryType = $member['salary_type'] === 'weekly' ? 'Weekly' : 'Monthly';
 $periodLabel = $member['salary_type'] === 'weekly' ? 'This Week' : 'This Month';
@@ -91,355 +140,117 @@ $latest = !empty($payments) ? $payments[0] : null;
 // Paid percentage for progress bar
 $payPct = (float)$member['salary'] > 0 ? min(100, round(($paidPeriod / (float)$member['salary']) * 100)) : 0;
 
-include 'includes/header.php';
+include'includes/header.php';
 ?>
 
+<link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/dashboard.css'), ENT_QUOTES, 'UTF-8'); ?>">
 <style>
-    .staff-dash {
-        --s-green: #10b981;
-        --s-blue: #3b82f6;
-        --s-indigo: #4f46e5;
-        --s-amber: #f59e0b;
-        --s-rose: #ef4444;
-        --s-violet: #8b5cf6;
-        --s-cyan: #06b6d4;
-    }
+    /*
+     * Only what is this page's own. The hero, the KPI row, the panels and the
+     * chart all come from dashboard.css, which the admin dashboard uses too - that
+     * file used to be a copy of the admin page's<style> block, and having a second
+     * copy here is what let the two drift apart.
+     */
 
-    .hero-card {
-        position: relative;
-        border-radius: 1.25rem;
-        padding: 2rem;
-        margin-bottom: 1.75rem;
-        background: linear-gradient(135deg, #1e1b4b 0%, #312e81 45%, #4f46e5 100%);
-        color: #fff;
-        overflow: hidden;
-        box-shadow: 0 20px 40px -12px rgba(49, 46, 129, 0.55);
-    }
-    .hero-card::before {
-        content: '';
-        position: absolute;
-        top: -80px;
-        right: -60px;
-        width: 260px;
-        height: 260px;
-        border-radius: 50%;
-        background: radial-gradient(circle, rgba(255,255,255,0.16) 0%, transparent 70%);
-    }
-    .hero-card::after {
-        content: '';
-        position: absolute;
-        bottom: -100px;
-        left: -40px;
-        width: 220px;
-        height: 220px;
-        border-radius: 50%;
-        background: radial-gradient(circle, rgba(139,92,246,0.35) 0%, transparent 70%);
-    }
-    .hero-top {
-        display: flex;
-        align-items: center;
-        gap: 1.25rem;
-        position: relative;
-        z-index: 1;
-        flex-wrap: wrap;
-    }
-    .hero-avatar {
-        width: 76px;
-        height: 76px;
-        border-radius: 20px;
-        background: rgba(255,255,255,0.18);
-        border: 2px solid rgba(255,255,255,0.35);
-        backdrop-filter: blur(4px);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 2rem;
-        font-weight: 800;
-        flex-shrink: 0;
-    }
-    .hero-name {
-        font-size: 1.6rem;
-        font-weight: 800;
-        margin-bottom: 0.35rem;
-    }
-    .hero-role {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        background: rgba(255,255,255,0.16);
-        padding: 0.35rem 0.85rem;
-        border-radius: 999px;
-        font-size: 0.8rem;
-        font-weight: 600;
-    }
-    .hero-badges {
-        margin-left: auto;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 0.4rem;
-        position: relative;
-        z-index: 1;
-    }
-    .hero-badge {
-        background: rgba(255,255,255,0.14);
-        padding: 0.3rem 0.9rem;
-        border-radius: 999px;
-        font-size: 0.78rem;
-        font-weight: 600;
-    }
-    .hero-bottom {
-        margin-top: 1.75rem;
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-        gap: 1rem;
-        position: relative;
-        z-index: 1;
-    }
-    .hero-stat {
-        background: rgba(255,255,255,0.12);
-        border: 1px solid rgba(255,255,255,0.18);
-        border-radius: 1rem;
-        padding: 1rem 1.25rem;
-        backdrop-filter: blur(4px);
-    }
-    .hero-stat-label {
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        opacity: 0.75;
-        margin-bottom: 0.3rem;
-    }
-    .hero-stat-value {
-        font-size: 1.35rem;
-        font-weight: 800;
-    }
-    .hero-stat-sub {
-        font-size: 0.75rem;
-        opacity: 0.8;
-    }
-
-    /* Modern stat cards */
-    .m-stats {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 1.25rem;
-        margin-bottom: 1.75rem;
-    }
-    .m-stat {
-        background: #fff;
-        border-radius: 1.1rem;
-        padding: 1.4rem;
-        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
-        border: 1px solid #eef0f4;
-        display: flex;
-        align-items: flex-start;
-        gap: 1rem;
-        transition: transform .18s ease, box-shadow .18s ease;
-    }
-    .m-stat:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.1);
-    }
-    .m-icon {
-        width: 52px;
-        height: 52px;
-        border-radius: 14px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 1.35rem;
-        flex-shrink: 0;
-    }
-    .m-icon.green  { background: #ecfdf5; color: #059669; }
-    .m-icon.blue   { background: #eff6ff; color: #2563eb; }
-    .m-icon.indigo { background: #eef2ff; color: #4f46e5; }
-    .m-icon.amber  { background: #fffbeb; color: #d97706; }
-    .m-icon.rose   { background: #fef2f2; color: #dc2626; }
-    .m-icon.violet { background: #f5f3ff; color: #7c3aed; }
-    .m-icon.cyan   { background: #ecfeff; color: #0891b2; }
-    .m-label {
-        font-size: 0.82rem;
-        color: #64748b;
-        font-weight: 600;
-        margin-bottom: 0.3rem;
-    }
-    .m-value {
-        font-size: 1.45rem;
-        font-weight: 800;
-        color: #0f172a;
-        line-height: 1.15;
-    }
-    .m-sub {
-        font-size: 0.75rem;
-        color: #94a3b8;
-        margin-top: 0.25rem;
-    }
-
-    /* Salary progress */
-    .salary-card {
-        background: #fff;
-        border-radius: 1.1rem;
-        padding: 1.5rem;
-        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
-        border: 1px solid #eef0f4;
-        margin-bottom: 1.75rem;
-    }
+    /* A thin bar showing how much of this period's salary has been paid. */
     .salary-progress {
         height: 12px;
+        background: var(--gray-100);
         border-radius: 999px;
-        background: #eef2f7;
         overflow: hidden;
-        margin: 1rem 0 0.6rem;
+        margin: 1.25rem 0 0.6rem;
     }
+
     .salary-progress-fill {
         height: 100%;
         border-radius: 999px;
         background: linear-gradient(90deg, #10b981, #34d399);
-        transition: width .5s ease;
+        transition: width .4s ease;
     }
+
     .progress-labels {
         display: flex;
         justify-content: space-between;
-        font-size: 0.78rem;
-        color: #64748b;
+        font-size: 0.8rem;
+        color: var(--gray-600);
+        font-weight: 600;
     }
 
+    /* The six figures under the progress bar. */
     .salary-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-        gap: 1rem;
-        margin-top: 1.25rem;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: 0.85rem;
+        margin-top: 1.5rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid var(--gray-100);
     }
-    .salary-item {
-        background: #f8fafc;
-        border: 1px solid #eef0f4;
-        border-radius: 0.9rem;
-        padding: 0.9rem 1rem;
-        text-align: center;
-    }
+
     .salary-item .si-label {
         font-size: 0.72rem;
+        color: var(--gray-500);
+        font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: #94a3b8;
-        margin-bottom: 0.25rem;
+        letter-spacing: 0.03em;
     }
+
     .salary-item .si-value {
         font-size: 1.05rem;
-        font-weight: 800;
-        color: #0f172a;
-    }
-
-    /* Monthly chart */
-    .chart-card {
-        background: #fff;
-        border-radius: 1.1rem;
-        padding: 1.5rem;
-        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
-        border: 1px solid #eef0f4;
-        margin-bottom: 1.75rem;
-    }
-    .chart-bars {
-        display: flex;
-        align-items: flex-end;
-        gap: 10px;
-        height: 150px;
-        margin-top: 1rem;
-    }
-    .chart-col {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 6px;
-        height: 100%;
-        justify-content: flex-end;
-    }
-    .chart-bar {
-        width: 100%;
-        max-width: 40px;
-        border-radius: 8px 8px 4px 4px;
-        background: linear-gradient(180deg, #4f46e5, #6366f1);
-        min-height: 4px;
-        transition: height .5s ease;
-    }
-    .chart-col.zero .chart-bar {
-        background: #e2e8f0;
-    }
-    .chart-col.cur .chart-bar {
-        background: linear-gradient(180deg, #10b981, #34d399);
-    }
-    .chart-val {
-        font-size: 0.68rem;
         font-weight: 700;
-        color: #475569;
-    }
-    .chart-label {
-        font-size: 0.7rem;
-        color: #94a3b8;
+        color: var(--gray-800);
+        margin-top: 0.2rem;
     }
 
-    /* Section headers */
-    .sec-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin: 0 0 1rem;
-    }
-    .sec-head h3 {
-        margin: 0;
-        font-size: 1.05rem;
-        font-weight: 800;
-        color: #0f172a;
-    }
-
-    .payout-card {
-        background: #fff;
-        border-radius: 1.1rem;
-        padding: 1.5rem;
-        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
-        border: 1px solid #eef0f4;
-        margin-bottom: 1.75rem;
-    }
+    /* Latest payout, as a left-to-right flow of figures. */
     .payout-flow {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 1rem;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 0.75rem;
     }
+
     .flow-item {
-        background: #f8fafc;
-        border: 1px solid #eef0f4;
-        border-radius: 0.9rem;
-        padding: 1rem;
+        background: var(--gray-50);
+        border: 1px solid var(--gray-100);
+        border-radius: 10px;
+        padding: 0.85rem 0.75rem;
         text-align: center;
     }
+
     .flow-item .fi-icon {
-        font-size: 1.2rem;
+        font-size: 1.15rem;
+        line-height: 1;
         margin-bottom: 0.4rem;
     }
+
     .flow-item .fi-label {
-        font-size: 0.72rem;
+        font-size: 0.68rem;
+        color: var(--gray-500);
+        font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: #94a3b8;
-        margin-bottom: 0.25rem;
+        letter-spacing: 0.03em;
     }
+
     .flow-item .fi-value {
-        font-size: 1.1rem;
-        font-weight: 800;
-        color: #0f172a;
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: var(--gray-800);
+        margin-top: 0.25rem;
     }
+
+    .flow-plus { background: #ecfdf5; border-color: #d1fae5; }
     .flow-plus .fi-value { color: #059669; }
+    .flow-minus { background: #fef2f2; border-color: #fee2e2; }
     .flow-minus .fi-value { color: #dc2626; }
-    .flow-total {
-        background: linear-gradient(135deg, #ecfdf5, #d1fae5);
-        border: 2px solid #10b981;
-    }
-    .flow-total .fi-value {
-        font-size: 1.35rem;
-        color: #059669;
-    }
+    .flow-total { background: #eff6ff; border-color: #dbeafe; }
+    .flow-total .fi-value { color: #1d4ed8; font-size: 1.1rem; }
+
+    /*
+     * The shared chart paints the current column with a .today class; this page
+     * marks it .cur, so the accent is declared here rather than changing the
+     * shared file's name for one caller.
+     */
+    .chart-col.cur .chart-bar { background: linear-gradient(180deg, #4f46e5, #6366f1); }
+    .chart-col.zero .chart-bar { background: var(--gray-200); }
 </style>
 
 <!-- Flash Message -->
@@ -453,40 +264,40 @@ include 'includes/header.php';
 <?php endif; ?>
 
 <!-- Hero -->
-<div class="hero-card">
-    <div class="hero-top">
-        <div class="hero-avatar"><?php echo strtoupper(substr($member['name'], 0, 1)); ?></div>
+<div class="dash-hero">
+    <div class="dash-hero-top">
         <div>
-            <div class="hero-name"><?php echo sanitize($member['name']); ?></div>
-            <span class="hero-role">
-                <i class="fas fa-user-tie"></i> <?php echo sanitize($member['designation'] ?: 'Staff Member'); ?>
-            </span>
+            <div class="dash-hero-title">My Earnings</div>
+            <div class="dash-hero-sub">
+                <i class="fas fa-user-tie"></i>
+                <?php echo sanitize($member['name']); ?>
+                &middot; <?php echo sanitize($member['designation'] ?: 'Staff Member'); ?>
+                &middot; <?php echo $salaryType; ?> salary</div>
         </div>
-        <div class="hero-badges">
-            <span class="hero-badge"><i class="fas fa-calendar-alt"></i> <?php echo date('d M Y'); ?></span>
-            <span class="hero-badge"><i class="fas fa-tag"></i> <?php echo $salaryType; ?> Salary</span>
-        </div>
+        <span class="dash-hero-date">
+            <i class="far fa-calendar-alt"></i> <?php echo date; ?>
+        </span>
     </div>
-    <div class="hero-bottom">
-        <div class="hero-stat">
-            <div class="hero-stat-label">Base Salary</div>
-            <div class="hero-stat-value"><?php echo formatCurrency($member['salary']); ?></div>
-            <div class="hero-stat-sub">per <?php echo strtolower($salaryType); ?> period</div>
+    <div class="dash-hero-bottom">
+        <div class="hero-kpi">
+            <div class="hero-kpi-label"><i class="fas fa-wallet"></i> Base Salary</div>
+            <div class="hero-kpi-value" style="color:#4ade80;"><?php echo formatCurrency($member['salary']); ?></div>
+            <div class="hero-kpi-sub">per<?php echo strtolower($salaryType); ?> period</div>
         </div>
-        <div class="hero-stat">
-            <div class="hero-stat-label">Daily Rate (<?php echo $totalDays; ?> days)</div>
-            <div class="hero-stat-value"><?php echo formatCurrency($dailyRate); ?></div>
-            <div class="hero-stat-sub">Salary ÷ days in <?php echo date('F'); ?></div>
+        <div class="hero-kpi">
+            <div class="hero-kpi-label"><i class="fas fa-calculator"></i> Daily Rate</div>
+            <div class="hero-kpi-value"><?php echo formatCurrency($dailyRate); ?></div>
+            <div class="hero-kpi-sub">Salary ÷ <?php echo $totalDays; ?> days</div>
         </div>
-        <div class="hero-stat">
-            <div class="hero-stat-label">Paid <?php echo $periodLabel; ?></div>
-            <div class="hero-stat-value"><?php echo formatCurrency($paidPeriod); ?></div>
-            <div class="hero-stat-sub"><?php echo $payPct; ?>% of salary</div>
+        <div class="hero-kpi">
+            <div class="hero-kpi-label"><i class="fas fa-check-circle"></i> Paid<?php echo $periodLabel; ?></div>
+            <div class="hero-kpi-value"><?php echo formatCurrency($paidPeriod); ?></div>
+            <div class="hero-kpi-sub"><?php echo $payPct; ?>% of salary</div>
         </div>
-        <div class="hero-stat">
-            <div class="hero-stat-label">Due <?php echo $periodLabel; ?></div>
-            <div class="hero-stat-value"><?php echo formatCurrency($due); ?></div>
-            <div class="hero-stat-sub"><?php echo $due > 0 ? 'Salary still pending' : 'All paid up'; ?></div>
+        <div class="hero-kpi">
+            <div class="hero-kpi-label"><i class="fas fa-hourglass-half"></i> Due<?php echo $periodLabel; ?></div>
+            <div class="hero-kpi-value" style="<?php echo $due> 0 ? 'color:#f87171;' : ''; ?>"><?php echo formatCurrency($due); ?></div>
+            <div class="hero-kpi-sub"><?php echo $due> 0 ? 'Salary still pending' : 'All paid up'; ?></div>
         </div>
     </div>
 </div>
@@ -496,7 +307,7 @@ include 'includes/header.php';
     <div class="m-stat">
         <div class="m-icon green"><i class="fas fa-money-bill-wave"></i></div>
         <div>
-            <div class="m-label">Paid <?php echo $periodLabel; ?></div>
+            <div class="m-label">Paid<?php echo $periodLabel; ?></div>
             <div class="m-value"><?php echo formatCurrency($paidPeriod); ?></div>
             <div class="m-sub">Salary already received</div>
         </div>
@@ -504,9 +315,9 @@ include 'includes/header.php';
     <div class="m-stat">
         <div class="m-icon rose"><i class="fas fa-hourglass-half"></i></div>
         <div>
-            <div class="m-label">Due <?php echo $periodLabel; ?></div>
+            <div class="m-label">Due<?php echo $periodLabel; ?></div>
             <div class="m-value"><?php echo formatCurrency($due); ?></div>
-            <div class="m-sub"><?php echo $due > 0 ? 'Salary still pending' : 'Fully paid'; ?></div>
+            <div class="m-sub"><?php echo $due> 0 ? 'Salary still pending' : 'Fully paid'; ?></div>
         </div>
     </div>
     <div class="m-stat">
@@ -528,10 +339,10 @@ include 'includes/header.php';
 </div>
 
 <!-- Salary Progress -->
-<div class="salary-card">
-    <div class="sec-head">
+<div class="panel">
+    <div class="panel-head">
         <h3><i class="fas fa-chart-line" style="color:#10b981; margin-right:0.5rem;"></i><?php echo $salaryType; ?> Salary Progress</h3>
-        <span style="font-size:0.8rem; color:#64748b;"><?php echo $payPct; ?>% of <?php echo formatCurrency($member['salary']); ?></span>
+        <span style="font-size:0.8rem; color:#64748b;"><?php echo $payPct; ?>% of<?php echo formatCurrency($member['salary']); ?></span>
     </div>
     <div class="salary-progress">
         <div class="salary-progress-fill" style="width: <?php echo $payPct; ?>%;"></div>
@@ -551,19 +362,19 @@ include 'includes/header.php';
             <div class="si-value"><?php echo $dailyRate ? formatCurrency($dailyRate) : '-'; ?></div>
         </div>
         <div class="salary-item">
-            <div class="si-label">Earned (<?php echo date('M'); ?>)</div>
+            <div class="si-label">Earned (<?php echo date; ?>)</div>
             <div class="si-value"><?php echo formatCurrency($monthAgg['m_earned'] ?: 0); ?></div>
         </div>
         <div class="salary-item">
-            <div class="si-label">Bonus (<?php echo date('M'); ?>)</div>
+            <div class="si-label">Bonus (<?php echo date; ?>)</div>
             <div class="si-value" style="color:#059669;"><?php echo formatCurrency($monthAgg['m_bonus'] ?: 0); ?></div>
         </div>
         <div class="salary-item">
-            <div class="si-label">Advance (<?php echo date('M'); ?>)</div>
+            <div class="si-label">Advance (<?php echo date; ?>)</div>
             <div class="si-value" style="color:#dc2626;"><?php echo formatCurrency($monthAgg['m_advance'] ?: 0); ?></div>
         </div>
         <div class="salary-item">
-            <div class="si-label">Net Received (<?php echo date('M'); ?>)</div>
+            <div class="si-label">Net Received (<?php echo date; ?>)</div>
             <div class="si-value" style="color:#059669;"><?php echo formatCurrency($monthAgg['m_net'] ?: 0); ?></div>
         </div>
     </div>
@@ -571,14 +382,14 @@ include 'includes/header.php';
 
 <!-- Monthly Earnings Chart -->
 <?php if (!empty($monthRows)): ?>
-<div class="chart-card">
-    <div class="sec-head">
+<div class="panel">
+    <div class="panel-head">
         <h3><i class="fas fa-chart-bar" style="color:#4f46e5; margin-right:0.5rem;"></i>Monthly Earnings (Last 12 Months)</h3>
         <span style="font-size:0.8rem; color:#64748b;"><?php echo formatCurrency(array_sum(array_column($monthRows, 'total'))); ?> total</span>
     </div>
     <?php
     $chartMax = max(array_column($monthRows, 'total')) ?: 1;
-    $curYm = date('Y-m');
+    $curYm = date;
     ?>
     <div class="chart-bars">
         <?php foreach ($monthRows as $mr): ?>
@@ -587,7 +398,7 @@ include 'includes/header.php';
             $h = max(4, round(((float)$mr['total'] / $chartMax) * 100));
             $label = date('M', strtotime($mr['ym'] . '-01'));
             ?>
-            <div class="chart-col <?php echo $isCur ? 'cur' : ''; ?> <?php echo (float)$mr['total'] <= 0 ? 'zero' : ''; ?>">
+            <div class="chart-col<?php echo $isCur ? 'cur' : ''; ?> <?php echo (float)$mr['total'] <= 0 ? 'zero' : ''; ?>">
                 <span class="chart-val"><?php echo (float)$mr['total'] > 0 ? number_format((float)$mr['total'] / 1000, 1) . 'k' : '-'; ?></span>
                 <div class="chart-bar" style="height: <?php echo $h; ?>%;"></div>
                 <span class="chart-label"><?php echo $label; ?></span>
@@ -599,8 +410,8 @@ include 'includes/header.php';
 
 <!-- Latest Payout Breakdown -->
 <?php if ($latest): ?>
-<div class="payout-card">
-    <div class="sec-head">
+<div class="panel">
+    <div class="panel-head">
         <h3><i class="fas fa-receipt" style="color:#10b981; margin-right:0.5rem;"></i>Latest Payout</h3>
         <span class="badge badge-success"><?php echo date('d M Y', strtotime($latest['payment_date'])); ?></span>
     </div>
@@ -618,12 +429,12 @@ include 'includes/header.php';
         <div class="flow-item flow-plus">
             <div class="fi-icon">🎁</div>
             <div class="fi-label">Bonus</div>
-            <div class="fi-value"><?php echo $latest['bonus'] ? formatCurrency($latest['bonus']) : '৳ 0.00'; ?></div>
+            <div class="fi-value"><?php echo $latest['bonus'] ? formatCurrency($latest['bonus']) : ' 0.00'; ?></div>
         </div>
         <div class="flow-item flow-minus">
             <div class="fi-icon">➖</div>
             <div class="fi-label">Advance Deduction</div>
-            <div class="fi-value"><?php echo $latest['advance_deduction'] ? formatCurrency($latest['advance_deduction']) : '৳ 0.00'; ?></div>
+            <div class="fi-value"><?php echo $latest['advance_deduction'] ? formatCurrency($latest['advance_deduction']) : ' 0.00'; ?></div>
         </div>
         <div class="flow-item flow-total">
             <div class="fi-icon">✅</div>
@@ -640,8 +451,8 @@ include 'includes/header.php';
 <?php endif; ?>
 
 <!-- Payment History -->
-<div class="chart-card">
-    <div class="sec-head">
+<div class="panel">
+    <div class="panel-head">
         <h3><i class="fas fa-history" style="color:#3b82f6; margin-right:0.5rem;"></i>Payment History</h3>
         <span class="badge badge-primary"><?php echo count($payments); ?> records</span>
     </div>
@@ -689,4 +500,4 @@ include 'includes/header.php';
     </div>
 </div>
 
-<?php include 'includes/footer.php'; ?>
+<?php include'includes/footer.php'; ?>

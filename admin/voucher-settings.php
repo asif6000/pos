@@ -4,7 +4,7 @@
  * Configure the Lucky Entry Coupon
  */
 
-require_once '../config/db.php';
+require_once'../config/db.php';
 startSecureSession();
 
 if (!isLoggedIn() || !hasRole('admin')) {
@@ -35,6 +35,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'voucher_terms' => sanitize($_POST['voucher_terms'] ?? ''),
             'return_qr_url' => sanitize($_POST['return_qr_url'] ?? ''),
             'facebook_page' => sanitize($_POST['facebook_page'] ?? 'https://www.facebook.com'),
+            'coupon_raffle_url' => sanitize($_POST['coupon_raffle_url'] ?? ''),
+            // A checkbox that is absent means off, so this is written as an
+            // explicit 0 or 1 rather than left unset. A missing row would read as
+            // on, which is the wrong default here: the promo is what pushes the
+            // SMS past one segment, and the shop pays for the second one.
+            'invoice_sms_promo' => isset($_POST['invoice_sms_promo']) ? 1 : 0,
+            'invoice_sms_link'  => isset($_POST['invoice_sms_link']) ? 1 : 0,
+            'invoice_sms_max_items' => max(1, min(30, (int)($_POST['invoice_sms_max_items'] ?? 8))),
+            // Whitelisted rather than sanitized alone: a select can only send one
+            // of three values, and anything else arriving here is either a hand
+            // edit or a stale row. Both land on 'auto', which is the behaviour
+            // that still delivers - a shop is never locked out of its own
+            // invoices by a bad setting.
+            'invoice_sms_channel' => (function () {
+                $c = strtolower(trim((string)($_POST['invoice_sms_channel'] ?? 'auto')));
+                return in_array($c, ['auto', 'whatsapp', 'sms'], true) ? $c : 'auto';
+            })(),
         ];
 
         try {
@@ -50,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             setFlash('danger', 'Error saving voucher settings.');
         }
     }
-    
+
     redirect('voucher-settings.php');
 }
 
@@ -62,7 +79,7 @@ while ($row = $stmt->fetch()) {
     $settings[$row['setting_key']] = $row['setting_value'];
 }
 
-include 'includes/header.php';
+include'includes/header.php';
 ?>
 
 <!-- Flash Message -->
@@ -119,25 +136,25 @@ include 'includes/header.php';
                 <div class="form-group">
                     <label class="form-label">Prize 1 (1st Prize)</label>
                     <input type="text" name="coupon_prize_1" class="form-control"
-                        value="<?php echo sanitize($settings['coupon_prize_1'] ?? '🥇 ৳৫,০০০ Shopping Voucher — ১ জন'); ?>">
+                        value="<?php echo sanitize($settings['coupon_prize_1'] ?? '🥇 ৫,০০০ Shopping Voucher — ১ জন'); ?>">
                 </div>
                 
                 <div class="form-group">
                     <label class="form-label">Prize 2 (2nd Prize)</label>
                     <input type="text" name="coupon_prize_2" class="form-control"
-                        value="<?php echo sanitize($settings['coupon_prize_2'] ?? '🥈 ৳৩,০০০ Shopping Voucher — ১ জন'); ?>">
+                        value="<?php echo sanitize($settings['coupon_prize_2'] ?? '🥈 ৩,০০০ Shopping Voucher — ১ জন'); ?>">
                 </div>
 
                 <div class="form-group">
                     <label class="form-label">Prize 3 (3rd Prize)</label>
                     <input type="text" name="coupon_prize_3" class="form-control"
-                        value="<?php echo sanitize($settings['coupon_prize_3'] ?? '🥉 ৳২,০০০ Shopping Voucher — ১ জন'); ?>">
+                        value="<?php echo sanitize($settings['coupon_prize_3'] ?? '🥉 ২,০০০ Shopping Voucher — ১ জন'); ?>">
                 </div>
 
                 <div class="form-group">
                     <label class="form-label">Prize 4</label>
                     <input type="text" name="coupon_prize_4" class="form-control"
-                        value="<?php echo sanitize($settings['coupon_prize_4'] ?? '🎁 ৳৫০০ Shopping Voucher — ১০ জন'); ?>">
+                        value="<?php echo sanitize($settings['coupon_prize_4'] ?? '🎁 ৫০০ Shopping Voucher — ১০ জন'); ?>">
                 </div>
 
                 <div class="form-group">
@@ -159,6 +176,116 @@ include 'includes/header.php';
 
                 <hr style="margin: 1.5rem 0; border: 0; border-top: 1px dashed #ccc;">
 
+                <div class="card mb-3" style="border:1px solid #e5e7eb;">
+                    <div class="card-body">
+                        <h6 class="mb-2">SMS invoice-e promotion link</h6>
+
+                        <div class="form-group">
+                            <label class="form-label">Raffle draw link</label>
+                            <input type="url" name="coupon_raffle_url" class="form-control"
+                                placeholder="https://www.facebook.com/share/..."
+                                value="<?php echo sanitize($settings['coupon_raffle_url'] ?? 'https://www.facebook.com/share/1BvdYPmRoH/'); ?>">
+                            <small class="text-muted">
+                                Ei link-ta invoice SMS-er shathe customer-der paithai. Khali
+                                <code>http://</code> ba <code>https://</code> diye shuru holei
+                                kaaj korbe - onno kono link niloye deya hobe na.
+                            </small>
+                        </div>
+
+                        <div class="form-group mb-0">
+                            <label style="display:flex; align-items:flex-start; gap:0.6rem; cursor:pointer;">
+                                <input type="checkbox" name="invoice_sms_promo" value="1"
+                                    <?php echo (($settings['invoice_sms_promo'] ?? '0') === '1') ? 'checked' : ''; ?>
+                                    style="margin-top:0.2rem;">
+                                <span>
+                                    <strong>SMS e ei link-ta pathao</strong><br>
+                                    <small class="text-muted">
+                                        OFF thakle SMS ta ekta segment-e thakiye 1 ta charge.
+                                        ON thakle link djukar jonno message 2 ta segment hoy,
+                                        mane dui gun charge. Link katei felha hoy na - ekta
+                                        kkata link-i dead link.
+                                    </small>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card mb-3" style="border:1px solid #e5e7eb;">
+                    <div class="card-body">
+                        <h6 class="mb-2">Invoice kivabe pathabe</h6>
+
+                        <div class="form-group mb-0">
+                            <label class="form-label">Channel</label>
+                            <select name="invoice_sms_channel" class="form-control" style="max-width:340px;">
+                                <?php
+                                $channelNow = strtolower(trim((string)($settings['invoice_sms_channel'] ?? 'auto')));
+                                if (!in_array($channelNow, ['auto', 'whatsapp', 'sms'], true)) {
+                                    $channelNow = 'auto';
+                                }
+                                $channelOptions = [
+                                    'auto'     => 'Auto - SMS tried first, WhatsApp-e fallback',
+                                    'whatsapp' => 'WhatsApp only - SMS credit lagbe na',
+                                    'sms'      => 'SMS only - WhatsApp use hobe na',
+                                ];
+                                foreach ($channelOptions as $val => $label) {
+                                    echo '<option value="' . $val . '"'
+                                        . (($channelNow === $val) ? ' selected' : '') . '>'
+                                        . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '</option>';
+                                }
+                                ?>
+                            </select>
+                            <small class="text-muted">
+                                <strong>Auto</strong> thakle prothome SMS choley, SMS na gele ei text-ta
+                                WhatsApp-e pathiye dey - shop er nijer bridge diye, tai kono SMS charge
+                                lage na. Eta-i setting ta jodi gateway kaj na kore (mane provider e
+                                server IP whitelist nai) tabo-o invoice customer er paithay.
+                                <strong>WhatsApp only</strong> thakle SMS credit ekdom chhay, WhatsApp-i
+                                jabe. Bridge agent mode e nao thakle WhatsApp pathano jabe na -
+                                Settings &gt; WhatsApp Bridge e chalu korte hobe.
+                            </small>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card mb-3" style="border:1px solid #e5e7eb;">
+                    <div class="card-body">
+                        <h6 class="mb-2">SMS invoice-e item list</h6>
+
+                        <div class="form-group">
+                            <label class="form-label">Maximum items in the SMS</label>
+                            <input type="number" name="invoice_sms_max_items" class="form-control"
+                                min="1" max="30" style="max-width:120px;"
+                                value="<?php echo (int)($settings['invoice_sms_max_items'] ?? 8); ?>">
+                            <small class="text-muted">
+                                Eta-i SMS er charge thik kore. 160 character porjonto ekta
+                                segment; 1-2 ta item ekta segment-e thaki, 5-6 ta item
+                                hole 2 ta segment - mane dui gun charge. Sonlimit porjonto
+                                item na thakle SMS e "...and 3 more items" likha thakbe,
+                                jate customer bujhte pare na je list kutu.
+                            </small>
+                        </div>
+
+                        <div class="form-group mb-0">
+                            <label style="display:flex; align-items:flex-start; gap:0.6rem; cursor:pointer;">
+                                <input type="checkbox" name="invoice_sms_link" value="1"
+                                    <?php echo (($settings['invoice_sms_link'] ?? '0') === '1') ? 'checked' : ''; ?>
+                                    style="margin-top:0.2rem;">
+                                <span>
+                                    <strong>SMS e full invoice link-o pathao</strong><br>
+                                    <small class="text-muted">
+                                        OFF thakle SMS e shudhu invoice-e text thakbe, link thakbe
+                                        na - mane kom charge. ON thakle customer browser e
+                                        puro invoice dekhete parbe.
+                                    </small>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <hr style="margin: 1.5rem 0; border: 0; border-top: 1px dashed #ccc;">
+
                 <div class="form-group">
                     <label class="form-label">Voucher Terms & Conditions</label>
                     <textarea name="voucher_terms" class="form-control" rows="4"
@@ -175,12 +302,11 @@ include 'includes/header.php';
 
                 <div class="text-right" style="margin-top: 1.5rem;">
                     <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-save"></i> Save Voucher Settings
-                    </button>
+                        <i class="fas fa-save"></i> Save Voucher Settings</button>
                 </div>
             </div>
         </div>
     </form>
 </div>
 
-<?php include 'includes/footer.php'; ?>
+<?php include'includes/footer.php'; ?>

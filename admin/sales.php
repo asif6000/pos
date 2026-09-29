@@ -19,9 +19,6 @@ if (!hasPermission('sales')) {
 
 define('PAGE_TITLE', 'Sales');
 
-$protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-$baseUrl = $protocol . '://' . ($_SERVER['HTTP_HOST'] ?? '') . rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/');
-
 $user = getCurrentUser();
 $store_id = $user['store_id'] ?? null;
 
@@ -326,7 +323,7 @@ include 'includes/header.php';
     </div>
 </div>
 
-<script src="<?php echo $baseUrl; ?>/assets/js/jsbarcode.min.js"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
 <script>
     async function viewInvoice(saleId) {
         document.getElementById('invoiceModal').classList.add('active');
@@ -532,7 +529,7 @@ include 'includes/header.php';
         <html>
         <head>
             <title>Invoice</title>
-            <link rel="stylesheet" href="<?php echo $baseUrl; ?>/assets/css/hind-siliguri.css">
+            <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
             <style>
                 body { font-family: 'Hind Siliguri', monospace; font-size: 12px; margin: 0; padding: 10px; }
                 #printableInvoice * { font-weight: 900 !important; color: #000 !important; }
@@ -541,7 +538,7 @@ include 'includes/header.php';
                 table { width: 100%; border-collapse: collapse; }
                 th, td { padding: 2px 0; }
             </style>
-            <script src="<?php echo $baseUrl; ?>\/assets\/js\/jsbarcode.min.js"><\/script>
+            <script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"><\/script>
         </head>
         <body>${printHTML}</body>
         </html>

@@ -13,9 +13,6 @@ if (!isLoggedIn()) {
 
 define('PAGE_TITLE', 'Returns');
 
-$protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-$baseUrl = $protocol . '://' . ($_SERVER['HTTP_HOST'] ?? '') . rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/');
-
 $db = getDB();
 $user = getCurrentUser();
 
@@ -271,8 +268,8 @@ include 'includes/header.php';
 </div>
 
 <?php
-// Load products for exchange feature (all active products, stock not needed for dropdown)
-$stmtProds = $db->prepare("SELECT p.id, p.name, p.sell_price FROM products p WHERE p.status = 'active' AND p.owner_id = ? ORDER BY p.name");
+// Load products for exchange feature (barcode included for scan-based lookup)
+$stmtProds = $db->prepare("SELECT p.id, p.name, p.barcode, p.sell_price FROM products p WHERE p.status = 'active' AND p.owner_id = ? ORDER BY p.name");
 $stmtProds->execute([$user['owner_id']]);
 $exchangeProducts = $stmtProds->fetchAll();
 ?>
@@ -448,24 +445,40 @@ $monthReturns = $stmtMonth->fetch();
                                 style="font-size: 0.8rem; font-weight: normal; color: var(--gray-500);">(optional)</span>
                         </h4>
 
-                        <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
-                            <input type="text" id="exchangeSearch" class="form-control"
-                                placeholder="Search product to exchange..." style="flex: 1;">
-                            <select id="exchangeProductSelect" class="form-control" style="flex: 2;">
-                                <option value="">-- Select product --</option>
-                                <?php foreach ($exchangeProducts as $p): ?>
-                                    <option value="<?php echo $p['id']; ?>" data-price="<?php echo $p['sell_price']; ?>"
-                                        data-name="<?php echo sanitize($p['name']); ?>">
-                                        <?php echo sanitize($p['name']); ?> — <?php echo CURRENCY; ?>
-                                        <?php echo number_format($p['sell_price'], 2); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
+                        <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; align-items: flex-start;">
+                            <div class="exch-search-wrap" id="exchangeSearchWrap" style="flex: 2;">
+                                <input type="text" id="exchangeSearch" class="form-control"
+                                    placeholder="Scan barcode or type product name..." autocomplete="off"
+                                    role="combobox" aria-expanded="false" aria-autocomplete="list"
+                                    aria-controls="exchangeDropdown">
+                                <button type="button" class="exch-scan-btn" id="exchangeScanBtn"
+                                    title="Scan barcode with camera" aria-label="Scan barcode with camera">
+                                    <i class="fas fa-camera"></i>
+                                </button>
+                                <div class="exch-dropdown" id="exchangeDropdown" role="listbox"></div>
+                            </div>
                             <input type="number" id="exchangeQty" class="form-control" value="1" min="1"
-                                style="width: 70px;">
-                            <button type="button" class="btn btn-primary" onclick="addExchangeItem()">
+                                style="width: 70px;" aria-label="Exchange quantity">
+                            <button type="button" class="btn btn-primary" id="addExchangeBtn"
+                                onclick="addExchangeItem()" style="height: 42px;">
                                 <i class="fas fa-plus"></i> Add
                             </button>
+                        </div>
+
+                        <!-- Selected exchange product indicator -->
+                        <div id="exchangeSelectedBox" style="display: none; margin-bottom: 0.75rem;">
+                            <div
+                                style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background: var(--success-bg, #ecfdf5); border: 1px solid var(--success, #059669); border-radius: var(--border-radius); font-size: 0.85rem;">
+                                <i class="fas fa-check-circle" style="color: var(--success, #059669);"></i>
+                                <span style="flex: 1;">
+                                    <strong id="exchangeSelectedName"></strong>
+                                    <span id="exchangeSelectedPrice" class="text-muted"></span>
+                                </span>
+                                <button type="button" class="btn btn-sm btn-outline"
+                                    onclick="clearExchangeSelection()" title="Clear selection">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </div>
                         </div>
 
                         <div id="exchangeItemsList">
@@ -557,6 +570,25 @@ $monthReturns = $stmtMonth->fetch();
             <button class="btn btn-danger" id="barcodeReturnBtn" onclick="confirmBarcodeReturn()">
                 <i class="fas fa-undo"></i> Return Now
             </button>
+        </div>
+    </div>
+</div>
+
+<!-- Exchange Barcode Camera Scan Modal -->
+<div class="modal-overlay" id="exchangeCameraModal">
+    <div class="modal" style="max-width: 500px;">
+        <div class="modal-header">
+            <h3 class="modal-title"><i class="fas fa-camera"></i> Scan Exchange Product</h3>
+            <button class="modal-close" onclick="closeExchangeCamera()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div id="exchangeCameraReader" style="width: 100%;"></div>
+            <p style="text-align: center; margin-top: 10px; color: var(--gray-500); font-size: 0.85rem;">
+                Point the camera at the product barcode
+            </p>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeExchangeCamera()">Close</button>
         </div>
     </div>
 </div>
@@ -701,11 +733,130 @@ $monthReturns = $stmtMonth->fetch();
     </div>
 <?php endif; ?>
 
-<script src="<?php echo $baseUrl; ?>/assets/js/jsbarcode.min.js"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/html5-qrcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
+<style>
+    /* --- Exchange product search / scan combobox --- */
+    .exch-search-wrap {
+        position: relative;
+    }
+
+    .exch-search-wrap .form-control {
+        padding-right: 40px;
+    }
+
+    .exch-search-wrap.scanner-active .form-control {
+        border-color: var(--primary, #2563eb);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, .15);
+    }
+
+    .exch-scan-btn {
+        position: absolute;
+        right: 4px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 34px;
+        height: 34px;
+        border: none;
+        border-radius: var(--border-radius);
+        background: transparent;
+        color: var(--gray-500);
+        cursor: pointer;
+        z-index: 2;
+    }
+
+    .exch-scan-btn:hover {
+        background: var(--gray-100);
+        color: var(--primary, #2563eb);
+    }
+
+    .exch-dropdown {
+        display: none;
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(100% + 4px);
+        max-height: 260px;
+        overflow-y: auto;
+        background: #fff;
+        border: 1px solid var(--gray-300);
+        border-radius: var(--border-radius);
+        box-shadow: 0 8px 20px rgba(0, 0, 0, .12);
+        z-index: 1050;
+    }
+
+    .exch-dropdown.open {
+        display: block;
+    }
+
+    .exch-dropdown-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.5rem 0.75rem;
+        cursor: pointer;
+        border-bottom: 1px solid var(--gray-100);
+        font-size: 0.9rem;
+    }
+
+    .exch-dropdown-item:last-child {
+        border-bottom: none;
+    }
+
+    .exch-dropdown-item:hover,
+    .exch-dropdown-item.active {
+        background: var(--gray-100);
+    }
+
+    .exch-dropdown-item .exch-name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .exch-dropdown-item .exch-meta {
+        color: var(--gray-500);
+        font-size: 0.78rem;
+        white-space: nowrap;
+    }
+
+    .exch-dropdown-item mark {
+        background: #fef08a;
+        padding: 0;
+    }
+
+    .exch-dropdown-empty {
+        padding: 0.75rem;
+        text-align: center;
+        color: var(--gray-500);
+        font-size: 0.85rem;
+    }
+</style>
 <script>
     const currency = '<?php echo CURRENCY; ?>';
+    const exchangeProductsData = <?php
+    // Pre-encode as JSON so product names/barcodes are safe inside the <script> block
+    echo json_encode(array_map(function ($p) {
+        return [
+            'id' => (int) $p['id'],
+            'name' => $p['name'],
+            'barcode' => $p['barcode'] ?: '',
+            'sell_price' => (float) $p['sell_price']
+        ];
+    }, $exchangeProducts), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+    ?>;
     let exchangeItems = [];
     let pendingBarcodeReturn = null;
+    let selectedExchangeProduct = null;
+    let exchangeMatches = [];
+    let exchangeActiveIndex = -1;
+    let html5ExchScanner = null;
+    // Fast keystrokes (< 50ms apart) indicate a USB barcode scanner, not manual typing
+    const EXCHANGE_SCAN_TIMEOUT = 50;
+    let exchangeScanBuffer = '';
+    let exchangeLastKeyTime = 0;
 
     function escapeHtml(str) {
         const div = document.createElement('div');
@@ -733,6 +884,7 @@ $monthReturns = $stmtMonth->fetch();
     }
 
     function closeReturnModal() {
+        closeExchangeCamera();
         document.getElementById('returnModal').classList.remove('active');
         resetReturn();
     }
@@ -745,6 +897,7 @@ $monthReturns = $stmtMonth->fetch();
         document.getElementById('invoiceResult').innerHTML = '';
         exchangeItems = [];
         updateExchangeDisplay();
+        clearExchangeSelection();
         document.querySelectorAll('.return-qty').forEach(el => el.value = 0);
     }
 
@@ -803,48 +956,202 @@ $monthReturns = $stmtMonth->fetch();
         html += '</tbody></table>';
         document.getElementById('returnItemsList').innerHTML = html;
         exchangeItems = [];
+        clearExchangeSelection();
         updateExchangeDisplay();
         calculateTotals();
     }
 
-    // Exchange Functions
+    // ===== Exchange product search / scan =====
+    function getExchangeElements() {
+        return {
+            wrap: document.getElementById('exchangeSearchWrap') || document.querySelector('.exch-search-wrap'),
+            input: document.getElementById('exchangeSearch'),
+            dropdown: document.getElementById('exchangeDropdown'),
+            qty: document.getElementById('exchangeQty'),
+            addBtn: document.getElementById('addExchangeBtn'),
+            selectedBox: document.getElementById('exchangeSelectedBox'),
+            selectedName: document.getElementById('exchangeSelectedName'),
+            selectedPrice: document.getElementById('exchangeSelectedPrice')
+        };
+    }
+
+    function findProductByBarcode(barcode) {
+        const code = (barcode || '').trim().toLowerCase();
+        if (code.length < 3) return null;
+        return exchangeProductsData.find(p => {
+            if (!p.barcode) return false;
+            return String(p.barcode).trim().toLowerCase() === code;
+        }) || null;
+    }
+
+    // Type-ahead search over product name and barcode
+    function filterExchangeProducts(query) {
+        const q = (query || '').trim().toLowerCase();
+        if (!q) return exchangeProductsData.slice(0, 50);
+
+        const digits = q.replace(/\D/g, '');
+        return exchangeProductsData.filter(p => {
+            if (String(p.name).toLowerCase().includes(q)) return true;
+            if (p.barcode && String(p.barcode).toLowerCase().includes(q)) return true;
+            if (digits && p.barcode && String(p.barcode).replace(/\D/g, '').includes(digits)) return true;
+            return false;
+        }).slice(0, 50);
+    }
+
+    function highlightMatch(text, query) {
+        const safe = escapeHtml(text);
+        const q = (query || '').trim();
+        if (!q) return safe;
+        const idx = String(text).toLowerCase().indexOf(q.toLowerCase());
+        if (idx === -1) return safe;
+        return escapeHtml(String(text).slice(0, idx)) +
+            '<mark>' + escapeHtml(String(text).slice(idx, idx + q.length)) + '</mark>' +
+            escapeHtml(String(text).slice(idx + q.length));
+    }
+
+    function renderExchangeDropdown(query) {
+        const { dropdown, input } = getExchangeElements();
+        if (!dropdown) return;
+
+        exchangeMatches = filterExchangeProducts(query);
+        exchangeActiveIndex = -1;
+
+        if (exchangeMatches.length === 0) {
+            dropdown.innerHTML = '<div class="exch-dropdown-empty">No products found</div>';
+        } else {
+            const q = (query || '').trim();
+            dropdown.innerHTML = exchangeMatches.map((p, i) => `
+                <div class="exch-dropdown-item" role="option" data-index="${i}" data-id="${p.id}">
+                    <span class="exch-name">${highlightMatch(p.name, q)}</span>
+                    <span class="exch-meta">
+                        ${p.barcode ? 'BC: ' + escapeHtml(String(p.barcode)) + ' &middot; ' : ''}
+                        ${currency} ${Number(p.sell_price).toFixed(2)}
+                    </span>
+                </div>`).join('');
+        }
+
+        dropdown.classList.add('open');
+        if (input) input.setAttribute('aria-expanded', 'true');
+    }
+
+    function closeExchangeDropdown() {
+        const { dropdown, input } = getExchangeElements();
+        if (dropdown) dropdown.classList.remove('open');
+        if (input) input.setAttribute('aria-expanded', 'false');
+        exchangeActiveIndex = -1;
+    }
+
+    function setExchangeSelection(product, options) {
+        if (!product) return false;
+        const opts = options || {};
+        const { input, selectedBox, selectedName, selectedPrice, addBtn } = getExchangeElements();
+
+        selectedExchangeProduct = {
+            id: parseInt(product.id),
+            name: product.name,
+            sell_price: parseFloat(product.sell_price) || 0
+        };
+
+        if (input && !opts.keepQuery) input.value = '';
+        if (selectedName) selectedName.textContent = selectedExchangeProduct.name;
+        if (selectedPrice) selectedPrice.textContent = '— ' + currency + ' ' + selectedExchangeProduct.sell_price.toFixed(2);
+        if (selectedBox) selectedBox.style.display = 'flex';
+        if (addBtn) addBtn.disabled = false;
+        closeExchangeDropdown();
+
+        // Auto-add straight away when triggered by a scan
+        if (opts.autoAdd) {
+            addExchangeItem();
+        }
+        return true;
+    }
+
+    function clearExchangeSelection() {
+        const { input, selectedBox, addBtn } = getExchangeElements();
+        selectedExchangeProduct = null;
+        if (input) input.value = '';
+        if (selectedBox) selectedBox.style.display = 'none';
+        if (addBtn) addBtn.disabled = true;
+        closeExchangeDropdown();
+    }
+
+    function selectExchangeByIndex(index) {
+        if (index < 0 || index >= exchangeMatches.length) return;
+        const product = exchangeMatches[index];
+        setExchangeSelection(product);
+        const { qty, input } = getExchangeElements();
+        if (qty) qty.focus();
+        else if (input) input.focus();
+    }
+
+    // Handle a scanned / entered code: exact barcode match wins, otherwise show matches
+    function handleExchangeCode(code) {
+        const { input } = getExchangeElements();
+        const value = (code !== undefined ? code : (input ? input.value : '')).trim();
+        if (!value) return;
+
+        const exact = findProductByBarcode(value);
+        if (exact) {
+            setExchangeSelection(exact, { autoAdd: true });
+            return;
+        }
+
+        // Not a barcode - fall back to a name/code search and let the user pick
+        if (input) input.value = value;
+        renderExchangeDropdown(value);
+    }
+
     function addExchangeItem() {
-        const select = document.getElementById('exchangeProductSelect');
-        const qtyInput = document.getElementById('exchangeQty');
+        const { qty } = getExchangeElements();
 
-        const productId = parseInt(select.value);
-        if (!productId) { alert('Please select a product'); return; }
+        if (!selectedExchangeProduct) {
+            // Fall back to whatever is typed in the search box (exact barcode only)
+            const { input } = getExchangeElements();
+            const exact = input ? findProductByBarcode(input.value) : null;
+            if (exact) {
+                setExchangeSelection(exact);
+            } else {
+                alert('Please select a product');
+                if (input) input.focus();
+                return;
+            }
+        }
 
-        const qty = parseInt(qtyInput.value) || 1;
-        if (qty < 1) { alert('Invalid quantity'); return; }
+        const productId = selectedExchangeProduct.id;
+        const qtyValue = parseInt(qty ? qty.value : 1) || 1;
+        if (qtyValue < 1) {
+            alert('Invalid quantity');
+            return;
+        }
 
-        const option = select.options[select.selectedIndex];
-        if (!option) { alert('Invalid selection'); return; }
+        const price = selectedExchangeProduct.sell_price;
+        if (isNaN(price) || price < 0) {
+            alert('Invalid product price');
+            return;
+        }
 
-        const name = option.dataset.name || '';
-        const price = parseFloat(option.dataset.price) || 0;
-
-        if (price < 0 || isNaN(price)) { alert('Invalid product price'); return; }
-
-        // Check if already added
+        // Merge if the same product is already in the exchange list
         const existing = exchangeItems.findIndex(item => item.product_id === productId);
         if (existing > -1) {
-            exchangeItems[existing].quantity += qty;
+            exchangeItems[existing].quantity += qtyValue;
             exchangeItems[existing].total_price = exchangeItems[existing].quantity * price;
         } else {
             exchangeItems.push({
                 product_id: productId,
-                product_name: name,
-                quantity: qty,
+                product_name: selectedExchangeProduct.name,
+                quantity: qtyValue,
                 unit_price: price,
-                total_price: qty * price
+                total_price: qtyValue * price
             });
         }
 
         updateExchangeDisplay();
         calculateTotals();
-        qtyInput.value = 1;
-        select.value = '';
+
+        if (qty) qty.value = 1;
+        clearExchangeSelection();
+        const { input } = getExchangeElements();
+        if (input) input.focus();
     }
 
     function removeExchangeItem(index) {
@@ -1054,7 +1361,7 @@ $monthReturns = $stmtMonth->fetch();
         const win = window.open('', '_blank');
         win.document.write(`
         <html><head><title>Receipt</title>
-        <link rel="stylesheet" href="<?php echo $baseUrl; ?>/assets/css/hind-siliguri.css">
+        <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
         <style>
             body { font-family: 'Hind Siliguri', monospace; font-size: 12px; margin: 0; padding: 10px; }
             #returnReceiptBarcode { height: 50px; }
@@ -1062,7 +1369,7 @@ $monthReturns = $stmtMonth->fetch();
             table { width: 100%; border-collapse: collapse; }
             th, td { padding: 2px 0; }
         </style>
-        <script src="<?php echo $baseUrl; ?>\/assets\/js\/jsbarcode.min.js"><\/script>
+        <script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"><\/script>
         </head>
         <body>${content.innerHTML}</body></html>
         `);
@@ -1092,17 +1399,167 @@ $monthReturns = $stmtMonth->fetch();
         });
     }
 
-    // Exchange product search filter
-    const exchSearch = document.getElementById('exchangeSearch');
-    if (exchSearch) {
-        exchSearch.addEventListener('input', function () {
-            const query = this.value.toLowerCase();
-            const select = document.getElementById('exchangeProductSelect');
-            Array.from(select.options).forEach(opt => {
-                if (!opt.value) return;
-                opt.style.display = opt.dataset.name.toLowerCase().includes(query) ? '' : 'none';
-            });
+    // Exchange product combobox wiring (search + barcode scan)
+    const exchEls = getExchangeElements();
+
+    if (exchEls.addBtn) exchEls.addBtn.disabled = true;
+
+    if (exchEls.input) {
+        // Typing filters the list (USB scanner keystrokes land here too)
+        exchEls.input.addEventListener('input', function () {
+            clearExchangeSelectionKeepingQuery();
+            renderExchangeDropdown(this.value);
         });
+
+        exchEls.input.addEventListener('focus', function () {
+            renderExchangeDropdown(this.value);
+        });
+
+        // Enter = exact barcode match (adds immediately) or accept the highlighted match
+        exchEls.input.addEventListener('keydown', function (e) {
+            const now = Date.now();
+            if (now - exchangeLastKeyTime > EXCHANGE_SCAN_TIMEOUT) {
+                exchangeScanBuffer = '';
+            }
+            exchangeLastKeyTime = now;
+
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                const buffer = exchangeScanBuffer;
+                exchangeScanBuffer = '';
+
+                if (exchangeActiveIndex > -1) {
+                    selectExchangeByIndex(exchangeActiveIndex);
+                    return;
+                }
+                if (buffer.length >= 3) {
+                    // Fast burst of characters => treat as a scan, don't show the list
+                    handleExchangeCode(buffer);
+                } else {
+                    handleExchangeCode(this.value);
+                }
+                return;
+            }
+
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!exchangeMatches.length) return;
+                exchangeActiveIndex += (e.key === 'ArrowDown' ? 1 : -1);
+                if (exchangeActiveIndex < 0) exchangeActiveIndex = 0;
+                if (exchangeActiveIndex >= exchangeMatches.length) exchangeActiveIndex = exchangeMatches.length - 1;
+                highlightExchangeActive();
+                return;
+            }
+
+            if (e.key === 'Escape') {
+                closeExchangeDropdown();
+                return;
+            }
+
+            if (e.key.length === 1) {
+                exchangeScanBuffer += e.key;
+            }
+        });
+
+        // Keep the buffer in sync so Enter can distinguish a scan from a short search
+        exchEls.input.addEventListener('keyup', function (e) {
+            if (e.key.length === 1) {
+                exchangeScanBuffer = this.value;
+            }
+        });
+
+        // Click a suggestion
+        if (exchEls.dropdown) {
+            exchEls.dropdown.addEventListener('mousedown', function (e) {
+                const item = e.target.closest('.exch-dropdown-item');
+                if (!item) return;
+                e.preventDefault();
+                selectExchangeByIndex(parseInt(item.dataset.index));
+            });
+        }
+    }
+
+    // Clear dropdown + Add button but keep what the user typed
+    function clearExchangeSelectionKeepingQuery() {
+        const { selectedBox, addBtn } = getExchangeElements();
+        selectedExchangeProduct = null;
+        if (selectedBox) selectedBox.style.display = 'none';
+        if (addBtn) addBtn.disabled = true;
+        closeExchangeDropdown();
+    }
+
+    function highlightExchangeActive() {
+        const { dropdown } = getExchangeElements();
+        if (!dropdown) return;
+        dropdown.querySelectorAll('.exch-dropdown-item').forEach((el, i) => {
+            el.classList.toggle('active', i === exchangeActiveIndex);
+            if (i === exchangeActiveIndex) el.scrollIntoView({ block: 'nearest' });
+        });
+    }
+
+    // Close the suggestion list when clicking outside the search box
+    document.addEventListener('click', function (e) {
+        if (!exchEls.wrap) return;
+        if (!exchEls.wrap.contains(e.target)) closeExchangeDropdown();
+    });
+
+    // Qty box Enter also adds the selected product
+    if (exchEls.qty) {
+        exchEls.qty.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addExchangeItem();
+            }
+        });
+    }
+
+    // Camera barcode scan for exchange products
+    const exchangeScanBtn = document.getElementById('exchangeScanBtn');
+    if (exchangeScanBtn) {
+        exchangeScanBtn.addEventListener('click', openExchangeCamera);
+    }
+
+    function openExchangeCamera() {
+        const modal = document.getElementById('exchangeCameraModal');
+        const reader = document.getElementById('exchangeCameraReader');
+        if (!modal || !reader) return;
+        modal.classList.add('active');
+        reader.innerHTML = '';
+        if (typeof Html5Qrcode === 'undefined') {
+            alert('Camera scanner library failed to load');
+            modal.classList.remove('active');
+            return;
+        }
+        try {
+            html5ExchScanner = new Html5Qrcode('exchangeCameraReader');
+            html5ExchScanner.start(
+                { facingMode: 'environment' },
+                { fps: 10, qrbox: { width: 250, height: 150 } },
+                function (decodedText) {
+                    closeExchangeCamera();
+                    handleExchangeCode(decodedText.trim());
+                },
+                function () { }
+            ).catch(function (err) {
+                alert('Camera error: ' + (err && err.message ? err.message : err));
+                modal.classList.remove('active');
+            });
+        } catch (e) {
+            alert('Camera error: ' + e.message);
+            modal.classList.remove('active');
+        }
+    }
+
+    function closeExchangeCamera() {
+        const modal = document.getElementById('exchangeCameraModal');
+        if (modal) modal.classList.remove('active');
+        if (html5ExchScanner) {
+            try {
+                html5ExchScanner.stop().then(function () { html5ExchScanner.clear(); }).catch(function () { });
+            } catch (e) { }
+            html5ExchScanner = null;
+        }
     }
 
     // Close modals on overlay click
@@ -1115,6 +1572,12 @@ $monthReturns = $stmtMonth->fetch();
     document.getElementById('barcodeReturnModal').addEventListener('click', function (e) {
         if (e.target === this) closeBarcodeReturnModal();
     });
+    const exchangeCameraModal = document.getElementById('exchangeCameraModal');
+    if (exchangeCameraModal) {
+        exchangeCameraModal.addEventListener('click', function (e) {
+            if (e.target === this) closeExchangeCamera();
+        });
+    }
 
     // Handle Enter key in search
     document.getElementById('invoiceSearch').addEventListener('keydown', function (e) {
@@ -1133,8 +1596,11 @@ $monthReturns = $stmtMonth->fetch();
         const returnModalOpen = document.getElementById('returnModal').classList.contains('active');
         const activeEl = document.activeElement;
 
-        // Skip when typing in the exchange search field
+        // Skip when the exchange product search dropdown owns the keyboard
+        // (typing a search, arrow-key selection, or scanning an exchange barcode)
         if (activeEl === document.getElementById('exchangeSearch')) return;
+        if (exchEls.wrap && activeEl && exchEls.wrap.contains(activeEl)) return;
+        if (exchEls.qty === activeEl) return;
 
         // When modal is closed, only intercept scans if focus is not on a text input
         if (!returnModalOpen && activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) return;

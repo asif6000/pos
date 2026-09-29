@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * POS System - Registration Page
  * Handles new user registration
@@ -12,10 +12,41 @@ if (isLoggedIn()) {
     redirect('../index.php');
 }
 
-// Registration is always open for admin accounts
+// A connection is taken here, before the guard below, because the guard needs one
+// and $db was previously only opened inside the try further down - which made the
+// guard a fatal and closed the hole only by crashing the page.
+$db = getDB();
 
+// Self-registration is OFF unless a setting turns it on.
+//
+// It used to be unconditional here, and what it created was role='admin' with
+// owner_id = NULL - the full-access combination - plus a store. Linked from the
+// login page, so not even hidden. Anyone who could reach the URL could make
+// themselves an administrator of a shop they do not own.
+//
+// A shop adds people from Admin -> Users, which is where the role actually gets
+// chosen; that is the path that should be used.
+//
+// Read without an owner scope on purpose: nobody is signed in on this page, so
+// there is no owner to scope by, and this is a single-shop install. Any row set
+// to 1 is taken as "the shop has deliberately opened registration".
+$selfReg = '0';
+try {
+    $v = $db->query("SELECT setting_value FROM settings
+                      WHERE setting_key = 'self_registration' ORDER BY id LIMIT 1")->fetchColumn();
+    $selfReg = ($v === false || $v === null || $v === '') ? '0' : (string)$v;
+} catch (Exception $e) {
+    $selfReg = '0';   // if the setting cannot be read, closed is the safe answer
+}
+
+// Initialised before the guard fills it in. The first attempt set $error and then
+// wiped it on the next line.
 $error = '';
 $success = '';
+
+if ($selfReg !== '1') {
+    $error = 'Registration is closed on this system. Ask an administrator to create your account.';
+}
 
 // Handle registration form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -26,7 +57,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $confirm_password = $_POST['confirm_password'] ?? '';
 
     // Validation
-    if (empty($name) || empty($email) || empty($business_name) || empty($password)) {
+    if ($selfReg !== '1') {
+        // Already reported above; do not fall through to the insert.
+        $error = 'Registration is closed on this system.';
+    } elseif (empty($name) || empty($email) || empty($business_name) || empty($password)) {
         $error = 'All fields are required, including Business Name.';
     } elseif (strlen($name) < 2) {
         $error = 'Name must be at least 2 characters.';
@@ -90,8 +124,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../assets/css/hind-siliguri.css">
+    <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="icon" type="image/png" href="<?php echo htmlspecialchars(assetUrl('assets/img/ava_logo.png'), ENT_QUOTES, 'UTF-8'); ?>">
     <style>
         body {
             background-color: #fce7f3;
@@ -375,7 +410,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <div class="illustration-features">
                 <div class="illus-feature">
-                    <i class="fas fa-check-circle"></i> Free forever — no subscription
+                    <i class="fas fa-check-circle"></i> Free forever â€” no subscription
                 </div>
                 <div class="illus-feature">
                     <i class="fas fa-store"></i> Unlimited store branches
@@ -430,7 +465,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <div class="free-badge">
                     <i class="fas fa-gift"></i>
-                    <span><strong>Free Account</strong> — Get immediate access to all POS, inventory, and store features.</span>
+                    <span><strong>Free Account</strong> â€” Get immediate access to all POS, inventory, and store features.</span>
                 </div>
 
                 <button type="submit" class="btn-primary">
@@ -447,7 +482,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <!-- Powered by -->
     <div style="position: absolute; top: 30px; right: 50px; z-index: 10; display: flex; flex-direction: column; align-items: flex-end; font-family: 'Inter', sans-serif; pointer-events: none;">
         <span style="color: #9ca3af; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 3px; margin-bottom: 3px;">Powered By</span>
-        <img src="../assets/img/ava_logo.png" alt="AVA IT Solution" style="height: 40px; pointer-events: auto;">
+        <img src="<?php echo htmlspecialchars(assetUrl('assets/img/ava_logo.png'), ENT_QUOTES, 'UTF-8'); ?>" alt="AVA IT Solution" style="height: 40px; pointer-events: auto;">
     </div>
 </body>
 

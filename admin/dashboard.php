@@ -34,8 +34,39 @@ function scopeSql($sql, $store_id, $owner_id) {
         $sql .= " JOIN users u ON s.user_id = u.id WHERE u.store_id = ?";
         return [$sql, [$store_id]];
     }
-    $sql .= " JOIN users u ON s.user_id = u.id WHERE u.owner_id = ?";
-    return [$sql, [$owner_id]];
+    $sql .= " JOIN users u ON s.user_id = u.id WHERE " . ownerScopeSql('u', $owner_id);
+    // Two placeholders (see ownerScopeSql), so the owner id is bound twice.
+    // Returning it once here is what produced
+    // SQLSTATE[HY093]: Invalid parameter number on the first query of the page.
+    return [$sql, [$owner_id, $owner_id]];
+}
+
+/**
+ * The WHERE fragment that means "sales belonging to this owner".
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * A top-level admin has users.owner_id = NULL: they have no owner, they ARE the
+ * owner. getCurrentUser() hides that by handing back an *effective* owner_id
+ * (the user's own id when the column is NULL) so that owner-scoped queries have
+ * something to compare against.
+ *
+ * Comparing that effective id against the raw column is a category error, and
+ * it fails silently rather than loudly. NULL = 2 is NULL, not true, so it is
+ * never true, so the query is well formed, returns no rows, and every figure on
+ * the dashboard reads 0.00. There is no error anywhere to trace it from - the
+ * page renders perfectly. That is what it did here: an admin with 9 sales worth
+ * of 6,893 saw 0.00 for today's sales, this month, all time and commission.
+ *
+ * The same NULL is also how a real super admin is recognised, so the fragment
+ * has to match both: the owner column, or the row that is its own owner.
+ *
+ * @param string $alias  table alias for users
+ * @param int    $owner  effective owner id (never null)
+ * @return string SQL fragment with two '?' placeholders
+ */
+function ownerScopeSql($alias, $owner_id) {
+    return "({$alias}.owner_id = ? OR ({$alias}.owner_id IS NULL AND {$alias}.id = ?))";
 }
 
 try {
@@ -65,8 +96,8 @@ try {
         $commWhere = " u.store_id = ?";
         $commParams = [$store_id];
     } else {
-        $commWhere = " u.owner_id = ?";
-        $commParams = [$owner_id];
+        $commWhere = " " . ownerScopeSql('u', $owner_id);
+        $commParams = [$owner_id, $owner_id];
     }
 
     $stmt = $db->prepare("SELECT COALESCE(SUM(si.quantity), 0) * $commissionPerUnit as commission
@@ -89,7 +120,12 @@ try {
     $yesterdayTotal = (float)$stmt->fetchColumn();
 
     // ── Sales by Store (Today) ───────────────────────────────────────────────
-    $isSuper = ($user['role'] === 'admin' && empty($user['owner_id']));
+    // raw_owner_id, NOT owner_id. getCurrentUser() always fills owner_id in with
+    // the user's own id when the column is NULL, so testing it here was always
+    // false and $isSuper never became true - a top-level admin was silently
+    // scoped to their own stores like an ordinary owner. raw_owner_id is the
+    // untouched column, and NULL there is exactly what "is a super admin" means.
+    $isSuper = ($user['role'] === 'admin' && empty($user['raw_owner_id']));
     $params = [];
     $sql = "SELECT st.id as store_id, st.name as store_name, COUNT(s.id) as sale_count, COALESCE(SUM(s.total), 0) as total
             FROM stores st
@@ -196,7 +232,8 @@ try {
         $sql .= " JOIN users u ON s.user_id = u.id WHERE u.store_id = ? AND s.created_at BETWEEN ? AND ?";
         $params[] = $store_id;
     } else {
-        $sql .= " JOIN users u ON s.user_id = u.id WHERE u.owner_id = ? AND s.created_at BETWEEN ? AND ?";
+        $sql .= " JOIN users u ON s.user_id = u.id WHERE " . ownerScopeSql('u', $owner_id) . " AND s.created_at BETWEEN ? AND ?";
+        $params[] = $owner_id;
         $params[] = $owner_id;
     }
     $params[] = $monthStart; $params[] = $monthEnd;

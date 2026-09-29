@@ -26,9 +26,6 @@ while ($row = $stmt->fetch()) {
 
 $vatPercent = (float) ($settings['vat_percent'] ?? 0);
 
-$protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-$baseUrl = $protocol . '://' . ($_SERVER['HTTP_HOST'] ?? '') . rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/');
-
 // Get categories - Filter by owner
 $stmt = $db->prepare("SELECT id, name FROM categories WHERE status = 'active' AND owner_id = ? ORDER BY name");
 $stmt->execute([$user['owner_id']]);
@@ -1006,6 +1003,14 @@ include 'includes/header.php';
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeInvoiceModal()">Close</button>
+            <button class="btn btn-whatsapp" id="invoiceWaBtn" onclick="sendInvoiceWhatsApp()"
+                    style="background:#25D366;color:#fff;border:none;">
+                <i class="fab fa-whatsapp"></i> WhatsApp
+            </button>
+            <button class="btn btn-sms" id="invoiceSmsBtn" onclick="sendInvoiceSms()"
+                    style="background:#4b5563;color:#fff;border:none;">
+                <i class="fas fa-comment-sms"></i> SMS
+            </button>
             <button class="btn btn-primary" onclick="printInvoice()">
                 <i class="fas fa-print"></i> Print
             </button>
@@ -1030,8 +1035,8 @@ include 'includes/header.php';
     </div>
 </div>
 
-<script src="<?php echo $baseUrl; ?>/assets/js/jsbarcode.min.js"></script>
-<script src="<?php echo $baseUrl; ?>/assets/js/html5-qrcode.min.js"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/html5-qrcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
 <script>
     // Global variables
     let cart = [];
@@ -1747,13 +1752,28 @@ include 'includes/header.php';
             const result = await response.json();
 
             if (result.success) {
-                showInvoice(result.invoice);
+                // The sale id is taken from the response root, which is where the
+                // API has always put it, and copied onto the invoice if the API
+                // did not. The WhatsApp and SMS buttons both post this back, and
+                // a missing id reached them as "sale_id: undefined", which the
+                // server cannot read - the cashier then saw "Invoice number
+                // bujha jay ni" with no idea why. One line of belt here, because
+                // the failure is invisible until someone tries to send a receipt.
+                const inv = result.invoice || {};
+                if (inv.id == null && result.sale_id != null) inv.id = result.sale_id;
+                showInvoice(inv);
                 cart = [];
                 updateCartDisplay();
                 document.getElementById('customerId').value = '';
                 document.getElementById('customerSearch').value = '';
                 document.getElementById('discountValue').value = 0;
                 document.getElementById('paidAmount').value = '';
+
+                // Hand the receipt over by itself, as Settings > Invoice Delivery
+                // asks. Fired after the cart has been cleared and the receipt is
+                // on screen, so the cashier is never made to wait for a phone
+                // network before they can start the next sale.
+                autoDeliverInvoice(result.notify || {});
 
                 // If editing, maybe redirect back to sales list or just refresh to clear edit mode?
                 // For now, reload to clear cart and edit mode
@@ -1916,7 +1936,24 @@ include 'includes/header.php';
     `;
         document.getElementById('invoiceModal').classList.add('active');
         renderInvoiceBarcode();
+        shownInvoice = invoice;
+        // Without an id the two send buttons cannot name the sale, and they would
+        // post a null and be told the invoice number was unreadable - which reads
+        // like the cashier's mistake. Say what is actually wrong instead.
+        const waBtn = document.getElementById('invoiceWaBtn');
+        const smsBtn = document.getElementById('invoiceSmsBtn');
+        const sendable = !!(invoice && invoice.id);
+        if (waBtn) waBtn.disabled = !sendable;
+        if (smsBtn) smsBtn.disabled = !sendable;
     }
+
+    /**
+     * The invoice currently on screen, kept so the WhatsApp button knows which
+     * sale it is talking about. Held as data rather than re-read out of the
+     * modal's HTML, because parsing a rendered receipt back into numbers is how
+     * a button ends up sending the wrong one.
+     */
+    let shownInvoice = null;
 
     function renderInvoiceBarcode() {
         const svg = document.getElementById('invoiceReturnBarcode');
@@ -1934,6 +1971,219 @@ include 'includes/header.php';
 
     function closeInvoiceModal() {
         document.getElementById('invoiceModal').classList.remove('active');
+    }
+
+    /**
+     * Send the receipt without being asked, per Settings > Invoice Delivery.
+     *
+     * Silent by design. An automatic send that popped a dialog would interrupt
+     * the counter on every single sale, and one that failed loudly would train
+     * the cashier to dismiss it without reading - so a receipt that genuinely
+     * could not go is left to the manual buttons on the receipt, which are still
+     * there and still work.
+     *
+     * @param {object} n  the notify block the sale API returns
+     */
+    function autoDeliverInvoice(n) {
+        if (!n || !n.auto) return;
+        if (n.is_edit) return;                 // a corrected sale must not resend
+        if (!shownInvoice || !shownInvoice.id) return;
+
+        // "Only to numbers confirmed on WhatsApp" is a promise, so an unchecked
+        // number is skipped rather than sent to. has_whatsapp is null when the
+        // check has never been run - the shop simply has not checked its numbers
+        // - and that is not a "no", so the promise is kept only where there is an
+        // answer to keep it with.
+        if (n.whatsapp_only && n.whatsapp && n.has_whatsapp !== 1) return;
+
+        const phone = (shownInvoice.customer_phone || '').trim();
+        if (!phone) return;                    // nothing to send to, and no prompting on auto
+
+        const wanted = [];
+        if (n.whatsapp) wanted.push('wa');
+        if (n.sms) wanted.push('sms');
+        wanted.forEach(function (kind) {
+            deliverInvoiceRequest(kind, phone, true);
+        });
+    }
+
+    /**
+     * The one request both buttons and the automatic send go through.
+     *
+     * Split out so a manual press and an automatic one report identically. The
+     * manual version is what showed "SMS pathano jay ni" with nothing behind it:
+     * a PHP fatal came back as a 500 with an HTML body, res.json() threw, and the
+     * catch had nothing but the word "failed" to offer. The body is read as text
+     * now and parsed by hand, so a non-JSON answer is reported for what it is.
+     */
+    async function deliverInvoiceRequest(kind, phone, quiet) {
+        const api = (kind === 'wa') ? 'api/invoice-send.php' : 'api/invoice-sms.php';
+        const label = (kind === 'wa') ? 'WhatsApp' : 'SMS';
+
+        let res, text;
+        try {
+            res = await fetch(api, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sale_id: shownInvoice.id, phone: phone })
+            });
+            text = await res.text();
+        } catch (err) {
+            if (!quiet) alert(label + ' pathano jay ni. Internet connection dekhe nin.');
+            return { ok: false, reason: 'network' };
+        }
+
+        let result;
+        try {
+            result = JSON.parse(text);
+        } catch (e) {
+            if (!quiet) {
+                alert(label + ' pathano jay ni.\n\nServer er reply:\n' + text.slice(0, 300));
+            }
+            return { ok: false, reason: 'bad response', http: res.status };
+        }
+
+        if (result.success) {
+            if (!quiet) {
+                if (result.manual) {
+                    showInvoiceSmsText(result.text, result.message);
+                } else {
+                    alert(result.message || (label + ' chole geche.'));
+                }
+            }
+            return { ok: true, result: result };
+        }
+
+        if (!quiet) {
+            if (result.text) {
+                showInvoiceSmsText(result.text, result.message);
+            } else {
+                alert(result.message || (label + ' pathano jay ni.'));
+            }
+        }
+        return { ok: false, reason: result.message };
+    }
+
+    /**
+     * Text the cashier can copy when the SMS gateway is not configured.
+     *
+     * The endpoint hands the message back whenever it could not send it itself,
+     * which is the normal state of a shop that has not bought an SMS credit yet.
+     * Rather than telling the cashier "failed" and leaving the feature unusable
+     * until someone configures a provider, the text is put on screen with the
+     * link selected, because the phone is already in their other hand.
+     */
+    function showInvoiceSmsText(text, message) {
+        if (message) alert(message);
+        const box = document.createElement('textarea');
+        box.value = text || '';
+        box.readOnly = true;
+        box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);'
+            + 'width:min(420px,90vw);height:140px;z-index:99999;padding:12px;'
+            + 'font-family:monospace;font-size:12px;border:1px solid #ccc;border-radius:8px';
+        document.body.appendChild(box);
+        box.focus();
+        box.select();
+        document.getElementById('invoiceSmsCopyBtn')?.remove();
+        const done = document.createElement('button');
+        done.id = 'invoiceSmsCopyBtn';
+        done.textContent = 'Copyed - Close';
+        done.style.cssText = 'position:fixed;left:50%;top:calc(50% + 90px);transform:translateX(-50%);'
+            + 'z-index:99999;padding:8px 16px;border:0;border-radius:6px;background:#111;color:#fff';
+        done.onclick = () => { box.remove(); done.remove(); };
+        document.body.appendChild(done);
+    }
+
+    /**
+     * Send the invoice link by SMS.
+     *
+     * Manual on purpose. An SMS costs money per message, so this is a button the
+     * cashier presses rather than something that fires on every sale - the shop
+     * decides who gets a text copy.
+     */
+    async function sendInvoiceSms() {
+        if (!shownInvoice) return;
+        if (!shownInvoice.id) {
+            alert('Ei invoice er number nai, tai pathano jay na.');
+            return;
+        }
+
+        let phone = (shownInvoice.customer_phone || '').trim();
+        if (!phone) {
+            phone = (prompt('Ei customer er kono number nai.\nSMS e pathate chay number ta likhun:') || '').trim();
+            if (!phone) return;
+        }
+
+        const btn = document.getElementById('invoiceSmsBtn');
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+
+        // The request and the reporting of it live in deliverInvoiceRequest, so a
+        // manual press and the automatic send fail in exactly the same way. The
+        // body is read as text there and parsed by hand, which is what lets a PHP
+        // error page be shown as the reason instead of being swallowed into a
+        // bare "could not send".
+        const done = await deliverInvoiceRequest('sms', phone, false);
+
+        btn.disabled = false;
+        if (done.ok && !done.result.manual) {
+            btn.innerHTML = '<i class="fas fa-check"></i> Sent';
+            setTimeout(() => {
+                if (document.getElementById('invoiceModal').classList.contains('active')) {
+                    closeInvoiceModal();
+                }
+            }, 1200);
+        } else {
+            btn.innerHTML = original;
+        }
+    }
+
+    /**
+     * Queue this invoice for WhatsApp.
+     *
+     * Deliberately does not wait for delivery. The receipt is drawn by the
+     * browser on the shop PC, so a request that held itself open for the answer
+     * would sit on a shared host for most of a minute doing nothing. The button
+     * says "queued" once the job is safely in the queue, and says exactly that -
+     * the shop is not told it was sent when it has only been asked for.
+     */
+    async function sendInvoiceWhatsApp() {
+        if (!shownInvoice) return;
+        if (!shownInvoice.id) {
+            alert('Ei invoice er number nai, tai pathano jay na.');
+            return;
+        }
+
+        // A walk-in has no customer record, so the invoice carries no number. The
+        // counter phone is the one they will answer on, so ask for it rather than
+        // refusing the one sale most likely to want a copy.
+        let phone = (shownInvoice.customer_phone || '').trim();
+        if (!phone) {
+            phone = (prompt('Ei customer er kono number nai.\nWhatsApp e pathate chay number ta likhun:') || '').trim();
+            if (!phone) return;
+        }
+
+        const btn = document.getElementById('invoiceWaBtn');
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+
+        const done = await deliverInvoiceRequest('wa', phone, false);
+
+        if (done.ok) {
+            btn.innerHTML = '<i class="fas fa-check"></i> Queued';
+            // Left disabled on purpose: the job is queued, and a second press
+            // would put another copy of the same receipt in the chat.
+            setTimeout(() => {
+                if (document.getElementById('invoiceModal').classList.contains('active')) {
+                    closeInvoiceModal();
+                }
+            }, 1200);
+        } else {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
     }
 
     async function printInvoice() {
@@ -1963,7 +2213,7 @@ include 'includes/header.php';
         <head>
             <title>Invoice</title>
             <meta charset="utf-8">
-            <link rel="stylesheet" href="<?php echo $baseUrl; ?>/assets/css/hind-siliguri.css">
+            <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
             <style>
                 body { font-family: 'Hind Siliguri', sans-serif; font-size: 12px; margin: 0; padding: 10px; }
                 #printableInvoice * { font-weight: 900 !important; color: #000 !important; }
@@ -1976,7 +2226,7 @@ include 'includes/header.php';
                     @page { margin: 5mm; }
                 }
             </style>
-            <script src="<?php echo $baseUrl; ?>\/assets\/js\/jsbarcode.min.js"><\/script>
+            <script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"><\/script>
         </head>
         <body>${printContent}</body>
         </html>
@@ -2032,6 +2282,46 @@ include 'includes/header.php';
         document.getElementById('createCustomerForm').reset();
     }
 
+    /**
+     * Ask whether one customer is on WhatsApp, after they have been saved.
+     *
+     * The three answers are kept apart, because they are three different facts:
+     * on WhatsApp, not on WhatsApp, and not checked yet. Reporting the last one as
+     * the second would tell a shopkeeper to stop writing to a customer who is
+     * perfectly reachable.
+     *
+     * The number itself is refreshed in the local list too, so the badge in the
+     * dropdown matches what was just decided.
+     */
+    async function checkCustomerWhatsApp(customerId) {
+        if (!customerId) return;
+        try {
+            const res = await fetch('api/customer-wa-check.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ customer_id: customerId })
+            });
+            const result = await res.json();
+            if (!result || !result.success) return;
+
+            const c = customersData.find(function (x) { return x.id === customerId; });
+            if (c) { c.has_whatsapp = result.has_wa; }
+
+            if (result.has_wa === true) {
+                alert('WhatsApp ache: ' + (result.text || 'Ei number e WhatsApp ache'));
+            } else if (result.has_wa === false) {
+                alert('WhatsApp nai: ' + (result.text || 'Ei number e WhatsApp nai'));
+            } else {
+                // A bridge that is offline is normal, and saying so plainly beats
+                // an error the cashier cannot act on.
+                alert(result.message || 'WhatsApp check hoye ni.');
+            }
+        } catch (err) {
+            // Never let this become a second failure on top of a successful save.
+            console.error('whatsapp check:', err);
+        }
+    }
+
     async function submitCustomerForm(e) {
         e.preventDefault();
         const form = document.getElementById('createCustomerForm');
@@ -2051,9 +2341,10 @@ include 'includes/header.php';
                 // Add to customers data and select it
                 customersData.push(result.customer);
                 selectCustomer(result.customer.id);
-                
+
                 closeCustomerModal();
                 alert('Customer added successfully!');
+                checkCustomerWhatsApp(result.customer.id);
             } else {
                 alert(result.message || 'Error adding customer');
             }

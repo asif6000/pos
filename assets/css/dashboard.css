@@ -1,0 +1,257 @@
+/**
+ * Dashboard design, shared by admin/dashboard.php and staff/dashboard.php.
+ *
+ * Extracted verbatim from the <style> block that used to sit in the body of
+ * admin/dashboard.php. Both dashboards now link this instead, because the staff
+ * page had a second copy of the same rules that had already drifted.
+ *
+ * Nothing here is dashboard-specific to one page: the hero, the KPI row, the
+ * panels, the bar chart and the list rows are used by both. The salary progress
+ * bar and the payout flow are not, and stay in staff/dashboard.php's own small
+ * block where they can.
+ *
+ * The path is relative to the page, and both pages sit one level below the
+ * project root.
+ */
+    .dash-hero {
+        position: relative;
+        border-radius: 1.25rem;
+        padding: 2rem 2.25rem;
+        margin-bottom: 1.75rem;
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
+        color: #fff;
+        overflow: hidden;
+        box-shadow: 0 20px 40px -12px rgba(15, 23, 42, 0.55);
+    }
+    .dash-hero::before {
+        content: '';
+        position: absolute;
+        top: -90px; right: -70px;
+        width: 300px; height: 300px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(59,130,246,0.35) 0%, transparent 70%);
+    }
+    .dash-hero::after {
+        content: '';
+        position: absolute;
+        bottom: -120px; left: -60px;
+        width: 260px; height: 260px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(16,185,129,0.3) 0%, transparent 70%);
+    }
+    .dash-hero-top {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        position: relative;
+        z-index: 1;
+        flex-wrap: wrap;
+    }
+    .dash-hero-title {
+        font-size: 1.5rem;
+        font-weight: 800;
+    }
+    .dash-hero-sub {
+        font-size: 0.85rem;
+        opacity: 0.75;
+        margin-top: 0.2rem;
+    }
+    .dash-hero-date {
+        margin-left: auto;
+        background: rgba(255,255,255,0.14);
+        padding: 0.45rem 1.1rem;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        position: relative;
+        z-index: 1;
+    }
+    .dash-hero-bottom {
+        margin-top: 1.5rem;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 1rem;
+        position: relative;
+        z-index: 1;
+    }
+    .hero-kpi {
+        background: rgba(255,255,255,0.1);
+        border: 1px solid rgba(255,255,255,0.16);
+        border-radius: 1rem;
+        padding: 1.1rem 1.25rem;
+        backdrop-filter: blur(4px);
+    }
+    .hero-kpi-label {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        opacity: 0.75;
+        margin-bottom: 0.3rem;
+    }
+    .hero-kpi-value {
+        font-size: 1.4rem;
+        font-weight: 800;
+    }
+    .hero-kpi-sub {
+        font-size: 0.75rem;
+        opacity: 0.85;
+        margin-top: 0.15rem;
+    }
+    .hero-kpi-sub .up { color: #34d399; font-weight: 700; }
+    .hero-kpi-sub .down { color: #f87171; font-weight: 700; }
+
+    .m-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 1.25rem;
+        margin-bottom: 1.75rem;
+    }
+    .m-stat {
+        background: #fff;
+        border-radius: 1.1rem;
+        padding: 1.4rem;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+        border: 1px solid #eef0f4;
+        display: flex;
+        align-items: flex-start;
+        gap: 1rem;
+        transition: transform .18s ease, box-shadow .18s ease;
+    }
+    .m-stat:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.1);
+    }
+    .m-icon {
+        width: 52px; height: 52px;
+        border-radius: 14px;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 1.35rem;
+        flex-shrink: 0;
+    }
+    .m-icon.green  { background: #ecfdf5; color: #059669; }
+    .m-icon.blue   { background: #eff6ff; color: #2563eb; }
+    .m-icon.indigo { background: #eef2ff; color: #4f46e5; }
+    .m-icon.amber  { background: #fffbeb; color: #d97706; }
+    .m-icon.rose   { background: #fef2f2; color: #dc2626; }
+    .m-icon.gold   { background: #fefce8; color: #b45309; }
+    .m-icon.violet { background: #f5f3ff; color: #7c3aed; }
+    .m-icon.cyan   { background: #ecfeff; color: #0891b2; }
+    .m-label {
+        font-size: 0.82rem;
+        color: #64748b;
+        font-weight: 600;
+        margin-bottom: 0.3rem;
+    }
+    .m-value {
+        font-size: 1.45rem;
+        font-weight: 800;
+        color: #0f172a;
+        line-height: 1.15;
+    }
+    .m-sub {
+        font-size: 0.75rem;
+        color: #94a3b8;
+        margin-top: 0.25rem;
+    }
+
+    .grid-2col { display: grid; grid-template-columns: 1.6fr 1fr; gap: 1.25rem; margin-bottom: 1.75rem; }
+    .grid-2col-eq { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-bottom: 1.75rem; }
+    @media (max-width: 900px) {
+        .grid-2col, .grid-2col-eq { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+        background: #fff;
+        border-radius: 1.1rem;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+        border: 1px solid #eef0f4;
+        overflow: hidden;
+    }
+    .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1.1rem 1.5rem;
+        border-bottom: 1px solid #f1f5f9;
+    }
+    .panel-head h3 {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 800;
+        color: #0f172a;
+    }
+    .panel-body { padding: 1.5rem; }
+    .panel-body.no-pad { padding: 0; }
+
+    /* Chart */
+    .chart-bars {
+        display: flex;
+        align-items: flex-end;
+        gap: 6px;
+        height: 160px;
+        margin-top: 1rem;
+    }
+    .chart-col {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        height: 100%;
+        justify-content: flex-end;
+        min-width: 0;
+    }
+    .chart-bar {
+        width: 100%;
+        border-radius: 6px 6px 2px 2px;
+        background: linear-gradient(180deg, #4f46e5, #818cf8);
+        min-height: 3px;
+        transition: height .5s ease;
+    }
+    .chart-col:hover .chart-bar { background: linear-gradient(180deg, #0f172a, #334155); }
+    .chart-col.today .chart-bar { background: linear-gradient(180deg, #10b981, #34d399); }
+    .chart-val { font-size: 0.62rem; font-weight: 700; color: #64748b; }
+    .chart-label { font-size: 0.66rem; color: #94a3b8; }
+
+    /* Payment method pills */
+    .pay-stat {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.6rem 0;
+        border-bottom: 1px solid #f1f5f9;
+    }
+    .pay-stat:last-child { border-bottom: none; }
+    .pay-icon {
+        width: 40px; height: 40px;
+        border-radius: 12px;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 1rem;
+        flex-shrink: 0;
+    }
+    .pay-bar { flex: 1; }
+    .pay-bar-track {
+        height: 8px;
+        border-radius: 999px;
+        background: #f1f5f9;
+        overflow: hidden;
+        margin-top: 4px;
+    }
+    .pay-bar-fill { height: 100%; border-radius: 999px; }
+
+    .list-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.6rem 0;
+        border-bottom: 1px solid #f1f5f9;
+    }
+    .list-row:last-child { border-bottom: none; }
+    .list-row .lr-main { display: flex; align-items: center; gap: 0.7rem; min-width: 0; }
+    .list-row .lr-amt { font-weight: 700; white-space: nowrap; }
+
+    .mini-num { font-size: 0.75rem; color: #94a3b8; }
+
+    .badge-pay { font-size: 0.72rem; padding: 0.25rem 0.6rem; border-radius: 999px; font-weight: 700; }
+

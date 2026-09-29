@@ -8,26 +8,24 @@ CREATE TABLE IF NOT EXISTS stores (
     name VARCHAR(100) NOT NULL,
     address TEXT,
     phone VARCHAR(20),
-    status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+    status ENUM('active', 'inactive') NOT NULL DEFAULT'active',
     owner_id INT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_owner (owner_id)
-) ENGINE=InnoDB;
+    INDEX idx_owner (owner_id)) ENGINE=InnoDB;
 
 -- 2. Categories Table
 CREATE TABLE IF NOT EXISTS categories (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     description TEXT,
-    status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+    status ENUM('active', 'inactive') NOT NULL DEFAULT'active',
     owner_id INT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_name (name),
     INDEX idx_status (status),
-    INDEX idx_owner (owner_id)
-) ENGINE=InnoDB;
+    INDEX idx_owner (owner_id)) ENGINE=InnoDB;
 
 -- 3. Products Table
 CREATE TABLE IF NOT EXISTS products (
@@ -39,9 +37,9 @@ CREATE TABLE IF NOT EXISTS products (
     sell_price DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
     stock INT NOT NULL DEFAULT 0,
     min_stock INT NOT NULL DEFAULT 10,
-    unit VARCHAR(20) DEFAULT 'piece',
+    unit VARCHAR(20) DEFAULT'piece',
     description TEXT,
-    status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+    status ENUM('active', 'inactive') NOT NULL DEFAULT'active',
     owner_id INT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -51,8 +49,7 @@ CREATE TABLE IF NOT EXISTS products (
     INDEX idx_category (category_id),
     INDEX idx_status (status),
     INDEX idx_stock (stock),
-    INDEX idx_owner (owner_id)
-) ENGINE=InnoDB;
+    INDEX idx_owner (owner_id)) ENGINE=InnoDB;
 
 -- 4. Roles Table
 CREATE TABLE IF NOT EXISTS roles (
@@ -60,10 +57,9 @@ CREATE TABLE IF NOT EXISTS roles (
     name VARCHAR(100) NOT NULL UNIQUE,
     slug VARCHAR(100) NOT NULL UNIQUE,
     description TEXT,
-    status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+    status ENUM('active', 'inactive') NOT NULL DEFAULT'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB;
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB;
 
 -- 5. Users Table
 CREATE TABLE IF NOT EXISTS users (
@@ -71,9 +67,9 @@ CREATE TABLE IF NOT EXISTS users (
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL,
-    role VARCHAR(50) NOT NULL DEFAULT 'cashier',
+    role VARCHAR(50) NOT NULL DEFAULT'cashier',
     store_id INT NULL,
-    status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+    status ENUM('active', 'inactive') NOT NULL DEFAULT'active',
     owner_id INT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -82,8 +78,7 @@ CREATE TABLE IF NOT EXISTS users (
     INDEX idx_role (role),
     INDEX idx_store (store_id),
     INDEX idx_status (status),
-    INDEX idx_owner (owner_id)
-) ENGINE=InnoDB;
+    INDEX idx_owner (owner_id)) ENGINE=InnoDB;
 
 -- 6. Store Stocks Table
 CREATE TABLE IF NOT EXISTS store_stocks (
@@ -93,8 +88,7 @@ CREATE TABLE IF NOT EXISTS store_stocks (
     quantity INT NOT NULL DEFAULT 0,
     FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-    UNIQUE KEY idx_store_product (store_id, product_id)
-) ENGINE=InnoDB;
+    UNIQUE KEY idx_store_product (store_id, product_id)) ENGINE=InnoDB;
 
 -- 7. Transfers Table
 CREATE TABLE IF NOT EXISTS transfers (
@@ -102,7 +96,7 @@ CREATE TABLE IF NOT EXISTS transfers (
     reference_no VARCHAR(50) NOT NULL UNIQUE,
     from_store_id INT NOT NULL,
     to_store_id INT NOT NULL,
-    status ENUM('pending', 'completed', 'cancelled') NOT NULL DEFAULT 'pending',
+    status ENUM('pending', 'completed', 'cancelled') NOT NULL DEFAULT'pending',
     note TEXT,
     created_by INT NOT NULL,
     owner_id INT NULL,
@@ -111,8 +105,7 @@ CREATE TABLE IF NOT EXISTS transfers (
     FOREIGN KEY (from_store_id) REFERENCES stores(id) ON DELETE RESTRICT,
     FOREIGN KEY (to_store_id) REFERENCES stores(id) ON DELETE RESTRICT,
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT,
-    INDEX idx_owner (owner_id)
-) ENGINE=InnoDB;
+    INDEX idx_owner (owner_id)) ENGINE=InnoDB;
 
 -- 8. Transfer Items Table
 CREATE TABLE IF NOT EXISTS transfer_items (
@@ -121,8 +114,7 @@ CREATE TABLE IF NOT EXISTS transfer_items (
     product_id INT NOT NULL,
     quantity INT NOT NULL,
     FOREIGN KEY (transfer_id) REFERENCES transfers(id) ON DELETE CASCADE,
-    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT
-) ENGINE=InnoDB;
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT) ENGINE=InnoDB;
 
 -- 9. Customers Table
 CREATE TABLE IF NOT EXISTS customers (
@@ -132,12 +124,15 @@ CREATE TABLE IF NOT EXISTS customers (
     email VARCHAR(100),
     address TEXT,
     owner_id INT NULL,
+    google_contact_id VARCHAR(255) NULL,
+    google_synced_at TIMESTAMP NULL,
+    has_whatsapp TINYINT(1) NULL DEFAULT NULL,      -- 1 = on WhatsApp, 0 = not, NULL = unchecked
+    whatsapp_checked_at TIMESTAMP NULL DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_name (name),
     INDEX idx_phone (phone),
-    INDEX idx_owner (owner_id)
-) ENGINE=InnoDB;
+    INDEX idx_owner (owner_id)) ENGINE=InnoDB;
 
 -- 10. Sales Table
 CREATE TABLE IF NOT EXISTS sales (
@@ -153,8 +148,8 @@ CREATE TABLE IF NOT EXISTS sales (
     total DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
     paid_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
     change_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-    payment_method ENUM('cash', 'bkash', 'nagad', 'rocket', 'card', 'bank') NOT NULL DEFAULT 'cash',
-    payment_status ENUM('paid', 'partial', 'unpaid') NOT NULL DEFAULT 'paid',
+    payment_method ENUM('cash', 'bkash', 'nagad', 'rocket', 'card', 'bank') NOT NULL DEFAULT'cash',
+    payment_status ENUM('paid', 'partial', 'unpaid') NOT NULL DEFAULT'paid',
     note TEXT,
     owner_id INT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -166,8 +161,7 @@ CREATE TABLE IF NOT EXISTS sales (
     INDEX idx_user (user_id),
     INDEX idx_payment_method (payment_method),
     INDEX idx_created_at (created_at),
-    INDEX idx_owner (owner_id)
-) ENGINE=InnoDB;
+    INDEX idx_owner (owner_id)) ENGINE=InnoDB;
 
 -- 11. Sale Items Table
 CREATE TABLE IF NOT EXISTS sale_items (
@@ -182,8 +176,7 @@ CREATE TABLE IF NOT EXISTS sale_items (
     FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT,
     INDEX idx_sale (sale_id),
-    INDEX idx_product (product_id)
-) ENGINE=InnoDB;
+    INDEX idx_product (product_id)) ENGINE=InnoDB;
 
 -- 12. Settings Table
 CREATE TABLE IF NOT EXISTS settings (
@@ -195,8 +188,7 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_owner_key (owner_id, setting_key),
     INDEX idx_key (setting_key),
-    INDEX idx_owner (owner_id)
-) ENGINE=InnoDB;
+    INDEX idx_owner (owner_id)) ENGINE=InnoDB;
 
 -- 13. Stock History Table
 CREATE TABLE IF NOT EXISTS stock_history (
@@ -212,8 +204,7 @@ CREATE TABLE IF NOT EXISTS stock_history (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT,
     INDEX idx_product (product_id),
     INDEX idx_type (type),
-    INDEX idx_created_at (created_at)
-) ENGINE=InnoDB;
+    INDEX idx_created_at (created_at)) ENGINE=InnoDB;
 
 -- 14. Returns Table
 CREATE TABLE IF NOT EXISTS returns (
@@ -222,9 +213,9 @@ CREATE TABLE IF NOT EXISTS returns (
     sale_id INT NOT NULL,
     user_id INT NOT NULL,
     total_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-    refund_method ENUM('cash', 'bkash', 'nagad', 'rocket', 'card', 'bank', 'store_credit') NOT NULL DEFAULT 'cash',
+    refund_method ENUM('cash', 'bkash', 'nagad', 'rocket', 'card', 'bank', 'store_credit') NOT NULL DEFAULT'cash',
     reason TEXT,
-    status ENUM('pending', 'approved', 'completed', 'rejected') NOT NULL DEFAULT 'completed',
+    status ENUM('pending', 'approved', 'completed', 'rejected') NOT NULL DEFAULT'completed',
     owner_id INT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -234,8 +225,7 @@ CREATE TABLE IF NOT EXISTS returns (
     INDEX idx_sale (sale_id),
     INDEX idx_status (status),
     INDEX idx_created_at (created_at),
-    INDEX idx_owner (owner_id)
-) ENGINE=InnoDB;
+    INDEX idx_owner (owner_id)) ENGINE=InnoDB;
 
 -- 16. Return Items Table
 CREATE TABLE IF NOT EXISTS return_items (
@@ -250,8 +240,7 @@ CREATE TABLE IF NOT EXISTS return_items (
     FOREIGN KEY (return_id) REFERENCES returns(id) ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT,
     INDEX idx_return (return_id),
-    INDEX idx_product (product_id)
-) ENGINE=InnoDB;
+    INDEX idx_product (product_id)) ENGINE=InnoDB;
 
 -- 17. Role Permissions Table
 CREATE TABLE IF NOT EXISTS role_permissions (
@@ -261,17 +250,25 @@ CREATE TABLE IF NOT EXISTS role_permissions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_role_perm (role_slug, permission),
     INDEX idx_role_slug (role_slug),
-    INDEX idx_permission (permission)
-) ENGINE=InnoDB;
+    INDEX idx_permission (permission)) ENGINE=InnoDB;
+
+-- 18. System Settings Table (global, not per-owner)
+CREATE TABLE IF NOT EXISTS system_settings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    setting_key VARCHAR(100) NOT NULL UNIQUE,
+    setting_value TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB;
+
+INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES ('permissions_version', '1');
 
 -- Data Inserts
 INSERT IGNORE INTO settings (setting_key, setting_value) VALUES
 ('shop_name', 'My POS Shop'),
 ('shop_address', 'Dhaka, Bangladesh'),
-('shop_phone', '+880 1XXX-XXXXXX'),
+('shop_phone', ''),
 ('shop_email', 'shop@example.com'),
 ('currency', 'BDT'),
-('currency_symbol', '৳'),
+('currency_symbol', ''),
 ('vat_percent', '0'),
 ('low_stock_threshold', '10'),
 ('invoice_prefix', 'INV'),

@@ -1389,7 +1389,13 @@ textarea.form-control {
 .p-4 { padding: 1.5rem; }
 
 .d-flex { display: flex; }
-.d-none { display: none; }
+/* !important is required, not laziness. A utility class has to beat any
+   component rule, and this file puts .d-none near the top while component rules
+   that set `display` come later - with equal specificity the later rule wins.
+   That is not theoretical: .wi-chat { display: flex } sat below this line, so
+   <div class="wi-chat d-none"> stayed visible. Hiding is a utility's whole job
+   and must not depend on where in this file somebody appended their CSS. */
+.d-none { display: none !important; }
 .d-block { display: block; }
 
 .align-center { align-items: center; }
@@ -1556,3 +1562,1489 @@ textarea.form-control {
     justify-content: center;
     z-index: 9999;
 }
+
+/* ============================================================
+   Marketing - WhatsApp & SMS
+   ============================================================ */
+
+.mk-channels {
+    display: grid;
+    /* One channel left, so one column. Two would leave the SMS chip at half
+       width with empty space beside it. */
+    grid-template-columns: 1fr;
+    gap: 14px;
+    margin-bottom: 18px;
+}
+
+/* Stands between the channel chip and the layout: a plain sentence saying that
+   campaigns are SMS while WhatsApp is read in the Inbox, so a shopkeeper
+   arriving with a campaign to send is not left guessing which button applies. */
+.mk-inbox-link {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: -6px 0 18px;
+    font-size: 13px;
+    color: var(--gray-500);
+}
+
+.mk-channel {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    background: #fff;
+    border: 2px solid var(--gray-200);
+    border-radius: 12px;
+    padding: 15px 17px;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    transition: border-color .15s, box-shadow .15s;
+}
+
+.mk-channel:hover { border-color: var(--gray-300); }
+
+.mk-channel.active {
+    border-color: var(--primary);
+    box-shadow: 0 2px 12px rgba(37, 99, 235, .12);
+}
+
+.mk-channel-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 20px;
+    flex-shrink: 0;
+}
+
+.mk-channel-text { flex: 1; min-width: 0; }
+.mk-channel-text strong { display: block; font-size: 15px; color: var(--gray-800); }
+.mk-channel-text small { display: block; font-size: 12px; color: var(--gray-500); margin-top: 1px; }
+
+.mk-channel-check {
+    color: var(--primary);
+    opacity: 0;
+    font-size: 17px;
+    transition: opacity .15s;
+}
+
+.mk-channel.active .mk-channel-check { opacity: 1; }
+
+.mk-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 18px;
+    align-items: start;
+}
+
+.mk-side { position: sticky; top: 76px; }
+.mk-main { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.mk-card { margin: 0; }
+
+@media (max-width: 1100px) {
+    .mk-layout { grid-template-columns: 1fr; }
+    .mk-side { position: static; }
+}
+
+@media (max-width: 640px) {
+    .mk-channels { grid-template-columns: 1fr; }
+}
+
+/* QR login */
+.mk-qr-wrap {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.mk-qr-side { flex: 1; min-width: 190px; }
+
+#mkQrArea {
+    width: 200px;
+    height: 200px;
+    border: 1px solid var(--gray-200);
+    border-radius: 12px;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+#mkQrArea img { width: 100%; height: 100%; object-fit: contain; }
+
+.mk-qr-status {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--gray-700);
+    margin-bottom: 6px;
+}
+
+/* -- Message composer ----------------------------------- */
+.mk-counter {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 12px;
+    color: var(--gray-500);
+    background: var(--gray-100);
+    padding: 3px 10px;
+    border-radius: 999px;
+    transition: background .15s, color .15s;
+}
+
+.mk-counter-sep { color: var(--gray-400); }
+
+.mk-counter.is-warn  { background: #fef3c7; color: #b45309; }
+.mk-counter.is-warn .mk-counter-sep { color: #d97706; }
+.mk-counter.is-over  { background: var(--danger-light); color: var(--danger); }
+.mk-counter.is-over .mk-counter-sep { color: var(--danger); }
+
+.mk-compose-box {
+    min-height: 118px;
+    resize: vertical;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.mk-meter {
+    height: 4px;
+    border-radius: 999px;
+    background: var(--gray-100);
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+.mk-meter-fill {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: var(--primary);
+    transition: width .2s ease, background .2s;
+}
+
+.mk-meter-fill.is-warn { background: var(--warning); }
+.mk-meter-fill.is-over { background: var(--danger); }
+
+.mk-linkbtn {
+    border: none;
+    background: none;
+    padding: 0;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--gray-500);
+    transition: color .15s;
+}
+
+.mk-linkbtn:hover { color: var(--danger); }
+
+/* -- Live preview ---------------------------------------- */
+.mk-preview {
+    border: 1px solid var(--gray-200);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--white);
+}
+
+.mk-preview-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--gray-200);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--gray-600);
+}
+
+.mk-preview-head i {
+    color: var(--gray-400);
+    margin-right: 6px;
+}
+
+.mk-preview-tag {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--primary-dark);
+    background: var(--info-light);
+    padding: 2px 8px;
+    border-radius: 999px;
+}
+
+.mk-chat {
+    padding: 14px 12px;
+    background: var(--gray-50);
+}
+
+.mk-bubble {
+    position: relative;
+    max-width: 88%;
+    background: var(--white);
+    border: 1px solid var(--gray-200);
+    border-radius: 10px 10px 10px 3px;
+    box-shadow: var(--shadow-sm);
+    padding: 9px 12px;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--gray-800);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+}
+
+.mk-bubble.is-empty {
+    color: var(--gray-400);
+    font-style: italic;
+    background: transparent;
+    border-style: dashed;
+    box-shadow: none;
+}
+
+.mk-tok-bad {
+    background: var(--danger-light);
+    color: var(--danger);
+    border-radius: 4px;
+    padding: 0 3px;
+    font-weight: 600;
+}
+
+.mk-preview-warn {
+    font-size: 11.5px;
+    line-height: 1.5;
+    font-weight: 500;
+    color: #b91c1c;
+    background: var(--danger-light);
+    padding: 8px 12px;
+}
+
+.mk-preview-warn:empty { display: none; }
+
+/* Quick template presets */
+.mk-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.mk-preset { transition: background .13s, border-color .13s, color .13s; }
+
+.mk-preset.is-on,
+.mk-preset.is-on:hover {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+}
+
+/* Audience filters */
+.mk-filters {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.mk-filters .form-control { flex: 1; min-width: 190px; }
+
+.mk-check {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    color: var(--gray-600);
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.mk-mini-select {
+    border: 1px solid var(--gray-200);
+    border-radius: 6px;
+    padding: 4px 6px;
+    font-size: 12px;
+    font-family: inherit;
+    color: var(--gray-700);
+}
+
+#mkCustomerRows tr.is-selected { background: #eff6ff; }
+#mkCustomerRows tr.is-picked td:first-child { box-shadow: inset 3px 0 0 var(--primary); }
+.mk-cust-phone { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.mk-stale-30 { color: var(--warning); }
+.mk-stale-90 { color: var(--danger); }
+
+/* ── WhatsApp availability of customer numbers ─────────────────────────────
+   Three states per number, and they must not look alike: a green tick means
+   the number can receive, a grey cross means it cannot, and a faint question
+   mark means nobody has asked yet. Collapsing "unchecked" into "no" would put
+   unverified numbers into a list presented as reachable. */
+.mk-wa-yes { color: #25D366; margin-right: 6px; }
+.mk-wa-no { color: var(--gray-400); margin-right: 6px; }
+.mk-wa-unknown { color: var(--gray-300); margin-right: 6px; }
+
+.mk-wa-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    background: #f0fdf4;
+    border: 1px solid #dcfce7;
+    border-radius: var(--radius, 8px);
+}
+.mk-wa-bar-left { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--gray-600); }
+.mk-wa-bar-left > i { color: #25D366; font-size: 16px; }
+.mk-wa-bar-right { display: flex; align-items: center; gap: 8px; }
+.mk-wa-done { color: #15803d; }
+.mk-wa-partial { color: #a16207; }
+.mk-wa-none { color: var(--gray-500); }
+
+/* The two numbers a shopkeeper keeps comparing: how many people are in the
+   customer list, and how many send-rows the campaigns have written. They are
+   different quantities and only ever equal by accident, so they get a line of
+   their own instead of being buried in a tooltip. */
+.mk-wa-note {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--gray-500);
+    margin: -6px 0 12px;
+}
+.mk-wa-note b { color: var(--gray-600); font-weight: 600; }
+
+/* Shown while the list refreshes itself, so a table that rewrites every few
+   seconds never looks like something is wrong. */
+.mk-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--gray-400);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+}
+.mk-live-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #25D366;
+    animation: mk-pulse 2s ease-in-out infinite;
+}
+@keyframes mk-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .25; }
+}
+
+/* Reuses the send progress bar's look; scoped here so the two never fight. */
+.mk-sync-progress { margin: -4px 0 12px; }
+.mk-sync-progress .mk-progress-text { margin-top: 6px; }
+
+.btn-whatsapp {
+    background: #25D366;
+    border-color: #25D366;
+    color: #fff;
+}
+.btn-whatsapp:hover { background: #1eb855; border-color: #1eb855; color: #fff; }
+.btn-whatsapp:disabled { opacity: .6; }
+
+.mk-check-wa i { color: #25D366; }
+
+/* Send progress */
+.mk-progress { flex: 1; min-width: 200px; }
+
+.mk-progress-bar {
+    height: 8px;
+    background: var(--gray-200);
+    border-radius: 99px;
+    overflow: hidden;
+}
+
+.mk-progress-fill {
+    height: 100%;
+    width: 0;
+    background: #25D366;
+    border-radius: 99px;
+    transition: width .3s ease;
+}
+
+.mk-progress-text { font-size: 12px; color: var(--gray-600); margin-top: 6px; }
+
+/* Campaign history */
+.mk-campaign-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--gray-100);
+}
+
+.mk-campaign-row:last-child { border-bottom: none; }
+.mk-campaign-row > i { font-size: 16px; width: 20px; text-align: center; }
+.mk-campaign-info { flex: 1; min-width: 0; }
+.mk-campaign-name { font-size: 13px; font-weight: 600; color: var(--gray-800); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mk-campaign-sub { font-size: 11px; color: var(--gray-500); margin-top: 1px; }
+
+/* Send log */
+.mk-log-list { max-height: 380px; overflow: auto; }
+
+.mk-log-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--gray-100);
+    font-size: 13px;
+}
+
+.mk-log-row:last-child { border-bottom: none; }
+.mk-log-icon { width: 18px; text-align: center; margin-top: 1px; }
+.mk-log-icon.ok { color: var(--success); }
+.mk-log-icon.bad { color: var(--danger); }
+/* Not a failure: the number simply has no WhatsApp, so nothing was attempted */
+.mk-log-icon.skip { color: var(--gray-400); }
+.mk-log-body { flex: 1; min-width: 0; }
+.mk-log-name { font-weight: 600; color: var(--gray-800); }
+.mk-log-num { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--gray-500); }
+.mk-log-err { font-size: 11px; color: var(--danger); margin-top: 2px; }
+.mk-log-err.skip { color: var(--gray-500); }
+
+/* Marketing - toasts */
+.mk-toast {
+    position: fixed;
+    right: 22px;
+    bottom: 22px;
+    z-index: 10050;
+    max-width: 380px;
+    padding: 13px 17px;
+    border-radius: 10px;
+    color: #fff;
+    font-size: 14px;
+    font-family: Inter, system-ui, sans-serif;
+    box-shadow: 0 8px 26px rgba(0, 0, 0, .18);
+    animation: mk-toast-in .22s ease;
+}
+
+.mk-toast-success { background: #059669; }
+.mk-toast-error   { background: #dc2626; }
+.mk-toast-warn    { background: #d97706; }
+.mk-toast-info    { background: #1f2937; }
+
+.mk-toast.mk-out { opacity: 0; transition: opacity .4s; }
+
+@keyframes mk-toast-in {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* WhatsApp check toast (POS screens) */
+.wa-toast {
+    position: fixed;
+    right: 22px;
+    bottom: 22px;
+    z-index: 10060;
+    max-width: 340px;
+    padding: 12px 16px;
+    border-radius: 10px;
+    color: #fff;
+    font-size: 14px;
+    box-shadow: 0 8px 26px rgba(0, 0, 0, .18);
+    animation: wa-toast-in .22s ease;
+}
+
+.wa-toast-yes      { background: #1d9a6c; }
+.wa-toast-no       { background: #6b7280; }
+.wa-toast-unknown  { background: #b45309; }
+.wa-toast-out { opacity: 0; transition: opacity .4s; }
+
+@keyframes wa-toast-in {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: none; }
+}
+
+
+/* ============================================================
+   Marketing - SMS gateway card
+   ============================================================ */
+
+.mk-gateway { overflow: hidden; }
+
+/* -- Provider tiles --------------------------------------- */
+.mk-providers {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.mk-provider {
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+    width: 100%;
+    text-align: left;
+    background: var(--white);
+    border: 1.5px solid var(--gray-200);
+    border-radius: 10px;
+    padding: 12px 13px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: border-color .15s, background .15s, box-shadow .15s;
+}
+
+.mk-provider:hover { border-color: var(--gray-300); background: var(--gray-50); }
+
+.mk-provider.is-on {
+    border-color: var(--primary);
+    background: #f8faff;
+    box-shadow: 0 1px 6px rgba(37, 99, 235, .1);
+}
+
+.mk-provider-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    margin-top: 5px;
+    flex-shrink: 0;
+    background: var(--gray-400);
+}
+
+.mk-provider.is-on .mk-provider-dot {
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .18);
+}
+
+.mk-dot-manual     { background: var(--gray-400); }
+.mk-dot-bulksmsbd  { background: #25D366; }
+.mk-dot-custom     { background: var(--secondary); }
+
+.mk-provider-body { flex: 1; min-width: 0; }
+
+.mk-provider-name {
+    display: block;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--gray-800);
+}
+
+.mk-provider.is-on .mk-provider-name { color: var(--primary-dark); }
+
+.mk-provider-hint {
+    display: block;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--gray-500);
+    margin-top: 2px;
+}
+
+.mk-provider-tick {
+    color: var(--primary);
+    font-size: 13px;
+    opacity: 0;
+    margin-top: 2px;
+    transition: opacity .15s;
+}
+
+.mk-provider.is-on .mk-provider-tick { opacity: 1; }
+
+/* -- Gateway body ----------------------------------------- */
+.mk-gb-body {
+    border-top: 1px solid var(--gray-100);
+}
+
+.mk-field { margin-bottom: 18px; }
+.mk-field:last-child { margin-bottom: 0; }
+
+.mk-label,
+.mk-label-row .mk-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--gray-700);
+    margin-bottom: 6px;
+    letter-spacing: .01em;
+}
+
+.mk-label-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.mk-label-tip {
+    font-size: 11px;
+    color: var(--gray-400);
+    font-weight: 400;
+}
+
+.mk-note {
+    font-size: 11.5px;
+    color: var(--gray-500);
+    margin-top: 5px;
+    line-height: 1.5;
+}
+
+.mk-note code,
+.mk-gb-manual code {
+    background: var(--gray-100);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 11px;
+}
+
+.mk-mono,
+.mk-url {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 12px;
+}
+
+.mk-two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+.mk-label-ico {
+    color: var(--gray-400);
+    margin-right: 5px;
+    font-size: 11px;
+}
+
+.mk-note-ico {
+    color: var(--gray-400);
+    margin-right: 5px;
+    font-size: 10.5px;
+}
+
+.mk-note strong { color: var(--gray-600); font-weight: 600; }
+
+/* -- Key status pill -------------------------------------- */
+.mk-key-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--gray-500);
+}
+
+.mk-key-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--gray-300);
+    flex-shrink: 0;
+    transition: background .15s, box-shadow .15s;
+}
+
+.mk-key-status.is-set { color: var(--success); }
+.mk-key-status.is-set .mk-key-dot {
+    background: var(--success);
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, .16);
+}
+
+/* -- Secret field (API key) ------------------------------- */
+.mk-secret {
+    display: flex;
+    align-items: stretch;
+    border: 1.5px solid var(--gray-200);
+    border-radius: 9px;
+    background: var(--white);
+    overflow: hidden;
+    transition: border-color .15s, box-shadow .15s;
+}
+
+.mk-secret:focus-within {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .1);
+}
+
+.mk-secret-icon {
+    display: flex;
+    align-items: center;
+    padding-left: 11px;
+    font-size: 12px;
+    color: var(--gray-400);
+    flex-shrink: 0;
+    pointer-events: none;
+    transition: color .15s;
+}
+
+.mk-secret:focus-within .mk-secret-icon { color: var(--primary); }
+
+.mk-secret .form-control {
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+    min-width: 0;
+    flex: 1;
+    letter-spacing: .04em;
+}
+
+.mk-secret .form-control:focus { box-shadow: none; }
+
+.mk-secret-btn {
+    border: none;
+    border-left: 1px solid var(--gray-200);
+    background: var(--gray-50);
+    color: var(--gray-500);
+    cursor: pointer;
+    padding: 0 13px;
+    font-size: 13px;
+    transition: background .15s, color .15s;
+    flex-shrink: 0;
+}
+
+.mk-secret-btn:hover:not(:disabled) { background: var(--primary); color: #fff; }
+
+.mk-secret-btn:disabled {
+    opacity: .4;
+    cursor: default;
+}
+
+.mk-secret-btn:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
+    position: relative;
+    z-index: 1;
+}
+
+.mk-secret-btn.is-done { background: var(--success); color: #fff; }
+
+/* -- Endpoint rows ---------------------------------------- */
+.mk-endpoint {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    border: 1.5px solid var(--gray-200);
+    border-radius: 9px;
+    overflow: hidden;
+    background: var(--white);
+    transition: border-color .15s, box-shadow .15s;
+}
+
+.mk-endpoint:focus-within {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .1);
+}
+
+.mk-endpoint + .mk-endpoint { margin-top: 8px; }
+.mk-endpoint + .mk-result { margin-bottom: 8px; }
+
+.mk-method {
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    color: #fff;
+    flex-shrink: 0;
+    user-select: none;
+}
+
+.mk-method-get  { background: #0EA5E9; }
+.mk-method-post { background: #8B5CF6; }
+
+.mk-endpoint .form-control {
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+    min-width: 0;
+    flex: 1;
+}
+
+.mk-endpoint .form-control:focus { box-shadow: none; }
+
+.mk-endpoint-test {
+    border: none;
+    border-left: 1px solid var(--gray-200);
+    background: var(--gray-50);
+    color: var(--gray-500);
+    cursor: pointer;
+    padding: 0 12px;
+    transition: background .15s, color .15s;
+    flex-shrink: 0;
+}
+
+.mk-endpoint-test:hover:not(:disabled) { background: var(--primary); color: #fff; }
+.mk-endpoint-test:disabled { opacity: .5; cursor: default; }
+
+/* -- Inline result line ----------------------------------- */
+.mk-result {
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--gray-500);
+    margin-top: 6px;
+    padding-left: 2px;
+    min-height: 0;
+}
+
+.mk-result:empty { display: none; }
+.mk-result.ok  { color: var(--success); }
+.mk-result.bad { color: var(--danger); }
+.mk-result.run { color: var(--gray-500); }
+
+/* -- Whitelist address ----------------------------------- */
+.mk-ip {
+    display: flex;
+    align-items: stretch;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--gray-50);
+}
+
+.mk-ip-value {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    padding: 9px 12px;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 13px;
+    color: var(--gray-800);
+    word-break: break-all;
+}
+
+.mk-ip-value.run  { color: var(--gray-500); }
+.mk-ip-value.bad  { color: var(--danger); }
+
+/* Matches the balance "Check" button, sized for a label row. */
+.mk-ip-refresh {
+    background: transparent;
+    border: 1px solid var(--gray-200);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--gray-600);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .15s, color .15s, border-color .15s;
+}
+
+.mk-ip-refresh:hover:not(:disabled) {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+}
+
+.mk-ip-refresh:disabled { opacity: .5; cursor: default; }
+
+.mk-note.bad { color: var(--danger); }
+
+/* -- Placeholder chips ------------------------------------ */
+.mk-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.mk-chip {
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11.5px;
+    background: var(--gray-100);
+    border: 1px solid var(--gray-200);
+    border-radius: 6px;
+    padding: 4px 9px;
+    cursor: pointer;
+    color: var(--gray-700);
+    transition: all .13s;
+}
+
+.mk-chip:hover {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+}
+
+/* -- Balance metric --------------------------------------- */
+.mk-metrics {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+}
+
+.mk-metric-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--gray-500);
+}
+
+.mk-metric-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--gray-800);
+    margin-top: 2px;
+    line-height: 1.2;
+}
+
+.mk-metric-value.ok  { color: var(--success); }
+.mk-metric-value.bad { color: var(--danger); font-size: 14px; }
+.mk-metric-btn { flex-shrink: 0; }
+
+/* -- Test send -------------------------------------------- */
+.mk-sendtest {
+    border: 1px dashed var(--gray-300);
+    border-radius: 10px;
+    padding: 13px 14px;
+}
+
+.mk-sendtest .mk-label { margin-bottom: 7px; }
+.mk-sendtest-row { display: flex; gap: 8px; }
+.mk-sendtest-row .form-control { flex: 1; min-width: 0; }
+
+/* -- Advanced --------------------------------------------- */
+.mk-advanced {
+    margin-top: 16px;
+    border-top: 1px solid var(--gray-100);
+    padding-top: 14px;
+}
+
+.mk-advanced-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 4px 0;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--gray-600);
+}
+
+.mk-advanced-toggle:hover { color: var(--primary); }
+.mk-advanced-toggle > i { font-size: 10px; transition: transform .18s; }
+.mk-advanced.is-open .mk-advanced-toggle > i { transform: rotate(90deg); }
+
+.mk-advanced-sub {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--gray-400);
+    margin-left: auto;
+}
+
+.mk-advanced-body {
+    display: none;
+    padding-top: 14px;
+}
+
+.mk-advanced.is-open .mk-advanced-body { display: block; }
+
+/* -- Manual empty state ----------------------------------- */
+.mk-gb-manual { border-top: 1px solid var(--gray-100); }
+
+.mk-empty {
+    text-align: center;
+    padding: 22px 12px;
+    color: var(--gray-500);
+}
+
+.mk-empty > i {
+    font-size: 30px;
+    color: var(--gray-300);
+    margin-bottom: 10px;
+    display: block;
+}
+
+.mk-empty p {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--gray-700);
+    margin: 0 0 3px;
+}
+
+.mk-empty span { font-size: 12px; }
+
+/* -- Save bar --------------------------------------------- */
+.mk-gb-save {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 20px;
+    border-top: 1px solid var(--gray-100);
+    background: var(--gray-50);
+}
+
+.mk-save-hint { font-size: 11.5px; color: var(--gray-500); }
+.mk-save-hint.ok { color: var(--success); }
+.mk-save-hint.bad { color: var(--danger); }
+.mk-save-hint:empty { display: none; }
+
+@media (max-width: 420px) {
+    .mk-two { grid-template-columns: 1fr; }
+    .mk-advanced-sub { display: none; }
+}
+
+/* -- Duplicate customer number hint -----------------------------------------
+   Shown under the phone field while a number is being typed, when that number
+   is already saved. Reserved space is not reserved: an empty hint takes no room,
+   so the form does not jump when the warning appears. */
+.cust-dup {
+    font-size: 12.5px;
+    line-height: 1.4;
+    margin-top: 5px;
+}
+.cust-dup:empty { margin-top: 0; }
+.cust-dup.is-dup { color: var(--warning); }
+.cust-dup.is-dup-orphan { color: var(--danger); }
+.cust-dup i { margin-right: 4px; }
+.cust-dup strong { font-weight: 600; }
+
+/* ═══ WhatsApp Inbox ═════════════════════════════════════════════════════════
+   A two-pane chat screen: threads on the left, the conversation on the right.
+   Sized against the viewport rather than in a fixed column so the thread list
+   keeps a readable line length on a shop counter monitor. */
+
+.wi-link { margin-bottom: 18px; }
+.wi-link-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.wi-link-state { display: flex; align-items: flex-start; gap: 11px; }
+
+.wi-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--gray-300, #d1d5db);
+    margin-top: 6px; flex: none;
+}
+.wi-link.is-linked .wi-dot { background: var(--success); box-shadow: 0 0 0 3px var(--success-light); }
+
+.wi-link-actions { display: flex; align-items: center; gap: 8px; }
+
+/* Shown only when the bridge is down. The QR is rendered on this page, so an
+   unlinked shop is given the code here rather than pointed at another page. */
+.wi-offline-note {
+    display: flex; align-items: flex-start; gap: 8px;
+    margin-top: 12px; padding: 9px 12px;
+    background: var(--danger-light); color: #991b1b;
+    border-radius: 8px; font-size: 13px;
+}
+.wi-offline-note a { color: #991b1b; font-weight: 600; }
+.wi-offline-note.is-error { flex-direction: column; align-items: flex-start; }
+.wi-offline-note.is-error code {
+    background: rgba(153, 27, 27, .1); padding: 1px 5px; border-radius: 4px;
+    font-size: 12px;
+}
+
+/* The login QR. Centred and capped, because a data-URL PNG of a WhatsApp login
+   code is a few kilobytes of base64 and would otherwise stretch the card to the
+   full width of the page on a desktop monitor. */
+.wi-qr-panel {
+    margin-top: 14px; padding: 16px;
+    background: var(--gray-50, #f9fafb);
+    border: 1px solid var(--gray-200, #e5e7eb);
+    border-radius: 10px;
+    text-align: center;
+}
+.wi-qr-img {
+    display: block; margin: 0 auto;
+    width: 220px; height: 220px; max-width: 100%;
+    image-rendering: pixelated;
+    background: #fff; padding: 8px;
+    border: 1px solid var(--gray-200, #e5e7eb);
+    border-radius: 8px;
+}
+/* Caption under the code. Two things the image itself cannot say, and both are
+   the reason a scan silently fails: which screen to open on the phone, and that
+   WhatsApp rotates the code about every minute - this one is swapped in place by
+   the status poll, so the one on screen is always the live one. */
+.wi-qr-cap {
+    margin-top: 10px;
+    font-size: 12.5px; line-height: 1.5;
+    color: var(--gray-600, #4b5563);
+}
+
+/* A quiet line under a status, most often the linked WhatsApp number on the
+   Marketing page. The name is left over from the bridge setup form this used to
+   style, where it sat beside the Save button - kept because the Marketing page
+   still uses it, and renaming a shared class to tidy up one page is not worth
+   the second grep. */
+.wi-setup-foot-note {
+    font-size: 12.5px; line-height: 1.5;
+    color: var(--gray-600, #4b5563);
+}
+
+@media (max-width: 480px) {
+    .wi-qr-img { width: 190px; height: 190px; }
+}
+
+.wi-layout {
+    display: grid;
+    grid-template-columns: 340px minmax(0, 1fr);
+    gap: 18px;
+    align-items: start;
+}
+
+/* ── thread list ─────────────────────────────────────────────────────────── */
+
+.wi-side { display: flex; flex-direction: column; overflow: hidden; }
+.wi-side-head { padding: 14px 16px 10px; }
+.wi-side-tools { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.wi-check {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12.5px; color: var(--gray-600, #4b5563); cursor: pointer;
+}
+
+.wi-unread { margin-left: 6px; }
+
+.wi-thread-list {
+    /* Fills the card, and scrolls on its own, so a long inbox never pushes the
+       conversation off the bottom of the page. */
+    max-height: calc(100vh - 300px);
+    min-height: 260px;
+    overflow-y: auto;
+    border-top: 1px solid var(--gray-200);
+}
+
+.wi-thread {
+    display: flex; align-items: center; gap: 11px;
+    width: 100%; text-align: left;
+    padding: 11px 14px;
+    background: none; border: 0; border-bottom: 1px solid var(--gray-100);
+    cursor: pointer; transition: background .12s;
+}
+.wi-thread:hover { background: var(--gray-50); }
+.wi-thread.is-active { background: var(--info-light); }
+
+.wi-avatar {
+    width: 38px; height: 38px; border-radius: 50%; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--primary-light); color: #fff;
+    font-weight: 600; font-size: 15px;
+}
+/* A number with no customer record yet. Different colour, because "we have not
+   met before" is exactly what a shopkeeper needs to notice. */
+.wi-avatar.is-lead { background: var(--warning); }
+
+.wi-thread-main { min-width: 0; flex: 1; display: block; }
+.wi-thread-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.wi-thread-name {
+    font-weight: 600; font-size: 13.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wi-thread-time { font-size: 11px; color: var(--gray-500, #6b7280); flex: none; }
+.wi-thread-bot { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.wi-thread-prev {
+    flex: 1; min-width: 0; font-size: 12.5px; color: var(--gray-600, #4b5563);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wi-count {
+    flex: none; min-width: 19px; padding: 1px 6px;
+    background: var(--success); color: #fff;
+    border-radius: 10px; font-size: 11px; font-weight: 700; text-align: center;
+}
+
+/* How many numbers the shop can actually reach, split by whether they are
+   already a customer. The split is the useful part: a count on its own does not
+   tell a shopkeeper whether there is anyone new to talk to. */
+.wi-tally {
+    display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+    margin-top: 9px; font-size: 12px;
+}
+.wi-tally-item {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px; border-radius: 20px;
+    background: var(--gray-100); color: var(--gray-700, #374151);
+    font-weight: 600; white-space: nowrap;
+}
+.wi-tally-item i { font-size: 10px; opacity: .8; }
+.wi-tally-item.is-total { background: var(--info-light); color: #1e40af; }
+.wi-tally-item.is-cust  { background: var(--success-light); color: #065f46; }
+.wi-tally-item.is-lead  { background: var(--warning-light); color: #92400e; }
+.wi-tally-seen { color: var(--gray-500, #6b7280); font-weight: 500; }
+
+.wi-side-foot { padding: 10px 14px; border-top: 1px solid var(--gray-200); }
+
+.wi-empty { padding: 30px 18px; text-align: center; color: var(--gray-500, #6b7280); font-size: 13px; }
+.wi-empty .spinner { margin: 0 auto 10px; }
+/* .wi-placeholder is gone with the placeholder panel. The icon class below stays:
+   the empty thread and the empty list still use it. */
+.wi-placeholder-icon { font-size: 42px; color: var(--gray-200); margin-bottom: 10px; }
+
+/* ── conversation ────────────────────────────────────────────────────────── */
+
+.wi-main { min-height: 560px; display: flex; flex-direction: column; overflow: hidden; }
+
+
+.wi-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+.wi-chat-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--gray-200);
+}
+.wi-chat-who { min-width: 0; flex: 1; }
+.wi-chat-who strong { display: block; font-size: 15px; }
+.wi-chat-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wi-badge-lead { background: var(--warning); color: #fff; }
+
+.wi-messages {
+    flex: 1; min-height: 0;
+    /* Fills whatever is left between the header and the composer. */
+    height: calc(100vh - 420px); min-height: 320px;
+    overflow-y: auto;
+    padding: 18px;
+    background: var(--gray-50);
+    background-image: radial-gradient(circle at 1px 1px, var(--gray-200) 1px, transparent 0);
+    background-size: 22px 22px;
+}
+
+.wi-msg { display: flex; margin-bottom: 8px; }
+.wi-msg.is-in { justify-content: flex-start; }
+.wi-msg.is-out { justify-content: flex-end; }
+
+.wi-bubble {
+    max-width: 78%;
+    padding: 8px 12px 20px;
+    border-radius: 12px;
+    position: relative;
+    font-size: 13.5px; line-height: 1.45;
+    word-wrap: break-word; overflow-wrap: anywhere;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, .07);
+}
+.wi-msg.is-in .wi-bubble { background: var(--white); border-top-left-radius: 3px; }
+.wi-msg.is-out .wi-bubble { background: #d9fdd3; border-top-right-radius: 3px; }
+.wi-msg.is-revoked .wi-bubble { background: var(--gray-100); color: var(--gray-500, #6b7280); font-style: italic; }
+
+.wi-msg-time {
+    position: absolute; right: 8px; bottom: 4px;
+    font-size: 10.5px; color: var(--gray-500, #6b7280);
+}
+
+.wi-composer {
+    display: flex; gap: 10px; align-items: flex-end;
+    padding: 12px 16px;
+    border-top: 1px solid var(--gray-200);
+    background: var(--white);
+}
+.wi-composer textarea { resize: none; min-height: 42px; max-height: 140px; }
+.wi-composer .btn { flex: none; height: 42px; }
+
+.wi-hint { padding: 0 16px 10px; font-size: 12.5px; color: var(--gray-600, #4b5563); min-height: 18px; }
+.wi-hint:empty { min-height: 0; padding: 0; }
+.wi-hint.is-error { color: var(--danger); }
+
+@media (max-width: 1100px) {
+    .wi-layout { grid-template-columns: 1fr; }
+    .wi-thread-list { max-height: 320px; min-height: 0; }
+    .wi-messages { height: 60vh; }
+    /* One pane at a time: the list, or the conversation. */
+    .wi-main:not(.wi-has-chat) .wi-chat { display: none; }
+    .wi-has-chat .wi-side { display: none; }
+}
+
+/* -- Inbox: the whole address book, not only active conversations ------------ */
+
+.wi-thread.is-empty .wi-thread-name { font-weight: 500; color: var(--gray-600, #4b5563); }
+.wi-thread.is-empty .wi-avatar { opacity: .75; }
+.wi-thread.is-empty .wi-thread-prev em { font-style: normal; color: var(--gray-500, #6b7280); }
+
+.wi-thread-empty {
+    margin: auto;
+    max-width: 380px;
+    text-align: center;
+    color: var(--gray-600, #4b5563);
+    font-size: 13px;
+    padding: 20px;
+}
+.wi-messages { display: flex; flex-direction: column; }
+.wi-thread-empty { align-self: center; }
+
+.wi-side-count { font-weight: 400; color: var(--gray-500, #6b7280); font-size: 12.5px; }
+
+/* -- Add recipient numbers to the phone's WhatsApp contacts -----------------
+   A QR holds exactly one contact, so this is deliberately a one-at-a-time
+   screen with a position counter and Next/Previous, not a grid. A grid of fifty
+   codes would be unreadable and unscannable anyway - the phone camera has to
+   focus on one. The .vcf download in the footer is the route for the whole
+   list. */
+
+.mk-contact-intro { font-size: 13px; line-height: 1.5; }
+
+.mk-contact-card { text-align: center; padding: 8px 0 4px; }
+
+.mk-contact-pos {
+    display: inline-block;
+    background: var(--gray-100); color: var(--gray-700, #374151);
+    border-radius: 20px; padding: 2px 12px;
+    font-size: 12px; font-weight: 600; margin-bottom: 12px;
+}
+
+.mk-contact-qr {
+    width: 260px; height: 260px; max-width: 100%;
+    border: 1px solid var(--gray-200); border-radius: 12px;
+    background: #fff; padding: 8px;
+    /* A QR has to be scanned from a screen that is not moving, so nothing here
+       animates or scales on hover. */
+}
+
+.mk-contact-name { font-weight: 600; font-size: 16px; margin-top: 12px; }
+.mk-contact-phone { color: var(--gray-600, #4b5563); font-size: 14px; }
+
+.mk-contact-empty { text-align: center; padding: 30px 18px; color: var(--gray-500, #6b7280); }
+.mk-contact-empty i { font-size: 34px; color: var(--gray-200); display: block; margin-bottom: 10px; }
+
+/* Whether a number can receive a WhatsApp message. Three states on purpose: a
+   number that was never probed gets a faint question mark, not a red cross.
+   Showing "no WhatsApp" for something merely untested would read as "this
+   customer is unreachable" and cost a real sale. */
+.wi-wa-yes     { color: #25D366; font-size: 11px; margin-left: 4px; }
+.wi-wa-no      { color: var(--danger); font-size: 11px; margin-left: 4px; }
+.wi-wa-unknown { color: var(--gray-400, #9ca3af); font-size: 11px; margin-left: 4px; }
+.wi-empty-hint { font-size: 12px; color: var(--gray-500, #6b7280); margin-top: 8px; }
+
+/* -- Inbox: picking several chats and sending one message to all ------------- */
+
+.wi-check-all { font-weight: 600; }
+
+/* The tick lives inside the row button, so it needs its own hit area and a
+   visible box without the browser's default control stealing the row click. */
+.wi-pick-cell { flex: none; display: flex; align-items: center; padding-right: 2px; }
+.wi-pick-cell .wi-pick { width: 15px; height: 15px; cursor: pointer; margin: 0; }
+.wi-pick-cell .wi-pick:disabled { cursor: not-allowed; opacity: .35; }
+
+.wi-bulk {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+.wi-bulk-count { font-size: 12.5px; font-weight: 600; margin-right: auto; }
+
+.wi-bulk-compose { margin-top: 2px; }
+.wi-bulk-compose textarea { font-size: 13px; resize: vertical; }
+.wi-bulk-actions { display: flex; gap: 7px; margin-top: 7px; }
+
+/* -- KPI cards ---------------------------------------------------------------
+   A reusable four-across row of headline numbers. Added to the shared
+   stylesheet rather than copied from the dashboard, because the dashboard's
+   .hero-kpi rules live inline in that one page and are not available anywhere
+   else - so the first version of these was a duplicate waiting to drift. */
+
+.mkpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 16px;
+    margin-bottom: 1.5rem;
+}
+
+.mkpi {
+    background: var(--white, #fff);
+    border: 1px solid var(--gray-200, #e5e7eb);
+    border-radius: 12px;
+    padding: 16px 18px;
+    min-width: 0;
+}
+
+.mkpi-label {
+    font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .05em;
+    color: var(--gray-500, #6b7280);
+    display: flex; align-items: center; gap: 7px;
+}
+.mkpi-label i { color: var(--primary-light, #3b82f6); }
+
+.mkpi-value {
+    font-size: 26px; font-weight: 800; line-height: 1.2;
+    margin: 7px 0 3px;
+    /* A long total must not push the card wider than its column. */
+    overflow-wrap: anywhere;
+}
+
+.mkpi-sub { font-size: 12.5px; color: var(--gray-500, #6b7280); }
+.mkpi-sub .up { color: var(--success); font-weight: 700; }
+
+@media (max-width: 992px) {
+    .mkpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+    .mkpi-row { grid-template-columns: 1fr; }
+}
+
+/* -- Customers: ordering the list, and marking the biggest spenders ------------
+   The list is ordered by total spend so the customers worth looking after are at
+   the top. The sort links are there because a list that can only be ordered one
+   way stops being a list; each one carries the current search through, so
+   re-ordering never silently discards a search. */
+
+.cust-sortbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 14px; flex-wrap: wrap;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--gray-200, #e5e7eb);
+}
+
+.cust-sort-links { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.cust-sort {
+    font-size: 12.5px; font-weight: 600;
+    padding: 5px 11px; border-radius: 20px;
+    color: var(--gray-600, #4b5563);
+    background: var(--gray-100, #f3f4f6);
+    text-decoration: none;
+    transition: background .12s, color .12s;
+}
+.cust-sort:hover { background: var(--gray-200, #e5e7eb); }
+.cust-sort.is-on { background: var(--primary); color: #fff; }
+
+.cust-vip-note {
+    font-size: 12px; color: var(--gray-500, #6b7280);
+    display: inline-flex; align-items: center; gap: 6px;
+}
+.cust-vip-note i { color: #f59e0b; }
+
+.cust-name { display: flex; align-items: center; gap: 8px; }
+
+/* Gold, not a badge colour. The point of the crown is that it stands out from
+   every other status on the page - blue and green are both already in use. */
+.cust-vip {
+    display: inline-flex; align-items: center; gap: 3px;
+    background: linear-gradient(135deg, #fef3c7, #fde68a);
+    color: #92400e;
+    border: 1px solid #fcd34d;
+    border-radius: 20px;
+    padding: 1px 7px 1px 6px;
+    font-size: 11px; font-weight: 700;
+    flex: none;
+}
+.cust-vip-rank {
+    background: #f59e0b; color: #fff;
+    border-radius: 50%;
+    width: 15px; height: 15px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9.5px;
+}
+
+tr.is-vip td { background: #fffdf5; }
+tr.is-vip:hover td { background: #fffbeb; }
+
+@media (max-width: 700px) {
+    .cust-sortbar { flex-direction: column; align-items: flex-start; }
+}
+
+/* -- Customer History: the empty state ----------------------------------------
+   Most customers in a young shop have never bought, so "no purchases" is the
+   common case on this page. It used to be one grey English line, which on an
+   otherwise Bengali page read as a failed load. This says who the customer is
+   and what the absence means. */
+.cust-empty {
+    text-align: center;
+    padding: 30px 20px;
+    color: var(--gray-600, #4b5563);
+}
+.cust-empty i {
+    font-size: 34px;
+    color: var(--gray-300, #d1d5db);
+    display: block;
+    margin-bottom: 12px;
+}
+.cust-empty p { font-size: 13.5px; line-height: 1.55; }
+.cust-empty strong { color: var(--gray-900, #111827); }

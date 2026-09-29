@@ -12,7 +12,7 @@ ini_set('display_errors', 0);
 ini_set('display_startup_errors', 0);
 error_reporting(0);
 
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/../../config/db.php';
 startSecureSession();
@@ -86,7 +86,7 @@ try {
 
     // Prepare data
     $customerIdRaw = $input['customer_id'] ?? 0;
-    $customerId = ((int) $customerIdRaw) > 0 ? (int) $customerIdRaw : null;
+    $customerId = ((int) $customerIdRaw)> 0 ? (int) $customerIdRaw : null;
     $subtotal = (float) ($input['subtotal'] ?? 0);
     $discountPercent = (float) ($input['discount_percent'] ?? 0);
     $discountAmount = (float) ($input['discount_amount'] ?? 0);
@@ -96,9 +96,9 @@ try {
     $paidAmount = (float) ($input['paid_amount'] ?? 0);
     $changeAmount = (float) ($input['change_amount'] ?? 0);
     $paymentMethod = sanitize($input['payment_method'] ?? 'cash');
-    $paymentStatus = $paidAmount >= $total ? 'paid' : ($paidAmount > 0 ? 'partial' : 'unpaid');
+    $paymentStatus = $paidAmount>= $total ? 'paid' : ($paidAmount> 0 ? 'partial' : 'unpaid');
 
-    if ($editSaleId > 0) {
+    if ($editSaleId> 0) {
         // --- EDIT MODE ---
 
         // 1. Restore stock from old items (subtracting already-returned quantities)
@@ -107,8 +107,7 @@ try {
             FROM return_items ri
             JOIN returns r ON ri.return_id = r.id
             WHERE r.sale_id = ?
-            GROUP BY ri.product_id
-        ");
+            GROUP BY ri.product_id");
         $stmtReturned->execute([$editSaleId]);
         $returnedQtys = [];
         while ($row = $stmtReturned->fetch()) {
@@ -126,7 +125,7 @@ try {
                 $restoreQty -= $returnedQtys[$item['product_id']];
             }
 
-            if ($restoreQty <= 0) continue;
+            if ($restoreQty<= 0) continue;
 
             // Restore to store_stocks
             // Check if record exists (it should, but safety first)
@@ -204,8 +203,7 @@ try {
             subtotal, discount_percent, discount_amount, 
             vat_percent, vat_amount, total, 
             paid_amount, change_amount, 
-            payment_method, payment_status, owner_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            payment_method, payment_status, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
         $stmt->execute([
             $invoiceNumber,
@@ -225,23 +223,21 @@ try {
         ]);
 
         $saleId = $db->lastInsertId();
-        $saleDate = date('d M Y, h:i A');
+        $saleDate = date;
     }
 
     // Insert Sale Items and Deduct Stock (Common for both New and Edit)
     $stmtItem = $db->prepare("INSERT INTO sale_items (
         sale_id, product_id, product_name, 
-        quantity, unit_price, total_price
-    ) VALUES (?, ?, ?, ?, ?, ?)");
+        quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?, ?)");
 
     $stmtHistory = $db->prepare("INSERT INTO stock_history (
         product_id, quantity_change, type, 
-        reference_id, note, user_id
-    ) VALUES (?, ?, 'sale', ?, ?, ?)");
+        reference_id, note, user_id) VALUES (?, ?, 'sale', ?, ?, ?)");
 
     foreach ($input['items'] as $item) {
         $productId = (int) $item['product_id'];
-        $qty       = (int) $item['quantity'];
+        $qty = (int) $item['quantity'];
 
         // Insert sale item
         $stmtItem->execute([
@@ -282,8 +278,8 @@ try {
 
     // Auto Cash In entry for the sale (full sale total)
     ensureCashbookSourceColumns();
-    $cashNote = 'Sale ' . $invoiceNumber;
-    if ($editSaleId > 0) {
+    $cashNote = 'Sale' . $invoiceNumber;
+    if ($editSaleId> 0) {
         updateAutoCashbookEntry('sale', $saleId, $total);
     } else {
         addAutoCashbookEntry('cash_in', $total, $cashNote, 'sale', $saleId);
@@ -293,12 +289,15 @@ try {
 
     // Prepare Invoice Data
     $invoiceData = [
+        // The id belongs to the invoice object, not beside it. The WhatsApp and
+        // SMS buttons on the receipt post this back as sale_id, and they get it
+        // from here - so an invoice without it is one the cashier cannot send,
+        // which is why the sale id is repeated below as well as inside.
+        'id' => $saleId,
         'invoice_number' => $invoiceNumber,
         'date' => $saleDate,
-        'customer_name' => $customerId > 0 ? ('Customer #' . $customerId) : '', // Simplified, ideally fetch name
-        'cashier' => $_SESSION['user_name'] ?? 'Admin',
-        'items' => $input['items'], // Use input items as they are fresh
-        'subtotal' => $subtotal,
+        'customer_name' => $customerId> 0 ? ('Customer #' . $customerId) : '', // Simplified, ideally fetch name'cashier' => $_SESSION['user_name'] ?? 'Admin',
+        'items' => $input['items'], // Use input items as they are fresh'subtotal' => $subtotal,
         'discount_percent' => $discountPercent,
         'discount_amount' => $discountAmount,
         'vat_percent' => $vatPercent,
@@ -310,10 +309,10 @@ try {
         'coupon_status' => $settings['coupon_status'] ?? '0',
         'coupon_title' => $settings['coupon_title'] ?? 'SMART COLLECTION MONTHLY LUCKY COUPON',
         'coupon_subtitle' => $settings['coupon_subtitle'] ?? 'প্রতিটি কেনাকাটায় নিশ্চিত Lucky Entry Coupon!',
-        'coupon_prize_1' => $settings['coupon_prize_1'] ?? '🥇 ৳৫,০০০ Shopping Voucher — ১ জন',
-        'coupon_prize_2' => $settings['coupon_prize_2'] ?? '🥈 ৳৩,০০০ Shopping Voucher — ১ জন',
-        'coupon_prize_3' => $settings['coupon_prize_3'] ?? '🥉 ৳২,০০০ Shopping Voucher — ১ জন',
-        'coupon_prize_4' => $settings['coupon_prize_4'] ?? '🎁 ৳৫০০ Shopping Voucher — ১০ জন',
+        'coupon_prize_1' => $settings['coupon_prize_1'] ?? '🥇 ৫,০০০ Shopping Voucher — ১ জন',
+        'coupon_prize_2' => $settings['coupon_prize_2'] ?? '🥈 ৩,০০০ Shopping Voucher — ১ জন',
+        'coupon_prize_3' => $settings['coupon_prize_3'] ?? '🥉 ২,০০০ Shopping Voucher — ১ জন',
+        'coupon_prize_4' => $settings['coupon_prize_4'] ?? '🎁 ৫০০ Shopping Voucher — ১০ জন',
         'coupon_prize_5' => $settings['coupon_prize_5'] ?? '👕 Premium T-Shirt — ১০ জন',
         'coupon_total_winners' => $settings['coupon_total_winners'] ?? 'মোট বিজয়ী: ২৩ জন',
         'coupon_announcement' => $settings['coupon_announcement'] ?? '📅 প্রতি মাসের ১ তারিখ রাত ৮:০০ টায় Smart Collection-এর অফিসিয়াল Facebook Live-এ বিজয়ী ঘোষণা করা হবে।',
@@ -324,8 +323,11 @@ try {
     $invoiceData['customer_phone'] = '';
     // Fetch customer name if available
     if ($customerId > 0) {
-        $stmtCu = $db->prepare("SELECT name, phone FROM customers WHERE id = ?");
-        $stmtCu->execute([$customerId]);
+        // Scoped by owner. Without it this reads any customer row in the
+        // installation by id, so a cashier who could guess an id would get
+        // another shop's customer name and phone printed on their receipt.
+        $stmtCu = $db->prepare("SELECT name, phone FROM customers WHERE id = ? AND owner_id = ?");
+        $stmtCu->execute([$customerId, $ownerId]);
         $cu = $stmtCu->fetch();
         if ($cu) {
             $invoiceData['customer_name'] = $cu['name'];
@@ -335,10 +337,54 @@ try {
 
 
     ob_end_clean();
+    // What the POS should do about the receipt on its own.
+    //
+    // Settings > Invoice Delivery already had these four checkboxes and they were
+    // saved correctly - but nothing ever read them, so "Sale sesh hole
+    // automatically pathao" did nothing at all. They are resolved here, next to
+    // the sale, so the browser does not have to guess and the decision comes from
+    // the same settings the cashier just saved.
+    //
+    // A missing row means on, which is what the settings screen displays, so the
+    // page and the behaviour cannot disagree.
+    $flag = function ($key) use ($settings) {
+        $v = $settings[$key] ?? '1';
+        return ($v === '0' || $v === 0 || $v === '') ? 0 : 1;
+    };
+
+    // Edits do not re-send. A corrected sale putting a second copy of the same
+    // receipt in the customer's chat is confusing, and an SMS costs money every
+    // time it happens.
+    $isEdit = $editSaleId > 0;
+
+    // Whether this customer has been found on WhatsApp. Null means "never
+    // checked", which is not the same as "no" - and the setting that restricts
+    // delivery to WhatsApp numbers must let an unchecked number through rather
+    // than silently withholding a receipt from everyone who has not run the
+    // number check yet.
+    $hasWhatsapp = null;
+    if ($customerId > 0) {
+        $stmtHw = $db->prepare("SELECT has_whatsapp FROM customers WHERE id = ? AND owner_id = ?");
+        $stmtHw->execute([$customerId, $ownerId]);
+        $v = $stmtHw->fetchColumn();
+        if ($v !== null && $v !== false) {
+            $hasWhatsapp = (int)$v ? 1 : 0;
+        }
+    }
+
     echo json_encode([
         'success' => true,
         'message' => 'Sale processed successfully',
-        'invoice' => $invoiceData
+        'invoice' => $invoiceData,
+        'sale_id' => $saleId,
+        'notify' => [
+            'auto'          => $flag('auto_send_invoice'),
+            'sms'           => $flag('invoice_send_sms'),
+            'whatsapp'      => $flag('invoice_send_whatsapp'),
+            'whatsapp_only' => $flag('invoice_sms_whatsapp_only'),
+            'has_whatsapp'  => $hasWhatsapp,
+            'is_edit'       => $isEdit ? 1 : 0,
+        ],
     ]);
 
 } catch (Exception $e) {

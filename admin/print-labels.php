@@ -151,7 +151,7 @@ function code128BarcodeSvg($data, $height = 30, $module = 1.5)
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Print Labels</title>
-    <link rel="stylesheet" href="../assets/css/hind-siliguri.css">
+    <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
     <style>
         @page {
             size: <?php echo floatval($paperWidth); ?>in <?php echo floatval($paperHeight); ?>in;

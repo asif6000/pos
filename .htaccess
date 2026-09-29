@@ -1,12 +1,39 @@
-# Disable Directory Browsing
-Options -Indexes
+# No directory listings.
+#
+# The live site was answering /admin/, /admin/api/, /assets/ and /uploads/ with a
+# full autoindex page: every filename in the project, with sizes and dates. That
+# is a map of the application handed to anyone who typed a folder name, and it is
+# how the missing tables and the stray debug script were found in the first
+# place.
+#
+# Wrapped in IfModule on purpose. A bare "Options -Indexes" returns 500 on a host
+# where that directive is not permitted - which would replace a cosmetic
+# problem with the exact failure this file exists to help fix.
+<IfModule mod_autoindex.c>
+    Options -Indexes
+</IfModule>
 
-# Set the default index file
-DirectoryIndex index.php
+# Serve index.php for a directory request rather than falling back to a listing.
+DirectoryIndex index.php index.html
 
-# URL Rewriting (Optional but recommended for clean URLs)
-RewriteEngine On
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-# If your app is in a subdirectory, change / to /your-subdir/
-# RewriteRule ^(.*)$ index.php [L,QSA]
+# Deny the developer scripts that used to sit loose in the project root.
+#
+# They were moved to C:\xampp\pos-dev-scripts, outside DocumentRoot, so this is
+# a net rather than the fix - it catches anything dropped in later.
+#
+# The two worst are worth naming: reset_admin.php set admin@pos.com to a known
+# password on a plain GET, and printed the credentials. fix_koro_password.php did
+# the same and also printed the password hash. Neither asked for a login.
+
+<FilesMatch "^(reset_admin|fix_koro_password|create_koro)\.php$">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "^(migrate_|migrate$|fix_|quick_fix|delete_store_fix|domain-setup|manage_stores|php_info|debug_|test_|check_|reset_admin|create_koro)">
+    Require all denied
+</FilesMatch>
+# Include-only and storage directories. config/ holds the database credentials and
+# sessions/ holds live session files; neither is ever fetched over HTTP by the app.
+<FilesMatch "\.(ini|env|log|sql|bak)$">
+    Require all denied
+</FilesMatch>

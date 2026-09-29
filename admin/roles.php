@@ -12,6 +12,12 @@ if (!isLoggedIn() || !hasRole('admin')) {
 
 define('PAGE_TITLE', 'Roles & Permissions');
 $db = getDB();
+// These tables used to be created here, at page load. They are in the
+// migration now. If one is genuinely absent, say so plainly instead of
+// letting the next query raise "Base table or view not found", which
+// reaches the browser as a blank HTTP 500.
+appRequireTables(['role_permissions'], $db);
+
 
 // All available permissions with labels
 $allPermissions = [
@@ -19,6 +25,7 @@ $allPermissions = [
     'pos'              => ['label' => 'POS / Billing',      'icon' => 'fa-cash-register',   'group' => 'Main'],
     'products'         => ['label' => 'Products',           'icon' => 'fa-box',             'group' => 'Inventory'],
     'categories'       => ['label' => 'Categories',         'icon' => 'fa-tags',            'group' => 'Inventory'],
+    'variables'        => ['label' => 'Variable Name',     'icon' => 'fa-sliders-h',       'group' => 'Inventory'],
     'stock'            => ['label' => 'Stock Management',   'icon' => 'fa-warehouse',       'group' => 'Inventory'],
     'transfers'        => ['label' => 'Transfers',          'icon' => 'fa-exchange-alt',    'group' => 'Inventory'],
     'sales'            => ['label' => 'Sales List',         'icon' => 'fa-receipt',         'group' => 'Sales'],
@@ -27,6 +34,7 @@ $allPermissions = [
     'reports'          => ['label' => 'Reports',            'icon' => 'fa-chart-bar',       'group' => 'Sales'],
     'cashbook'         => ['label' => 'Expense',           'icon' => 'fa-book',            'group' => 'Sales'],
     'customers'        => ['label' => 'Customers',          'icon' => 'fa-users',           'group' => 'Management'],
+    'marketing'        => ['label' => 'Marketing',          'icon' => 'fa-bullhorn',        'group' => 'Management'],
     'users'            => ['label' => 'Users',              'icon' => 'fa-user-cog',        'group' => 'Management'],
     'stores'           => ['label' => 'Stores',             'icon' => 'fa-store',           'group' => 'Management'],
     'staff'            => ['label' => 'Staff',              'icon' => 'fa-user-tie',       'group' => 'Management'],
@@ -41,7 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $id     = (int)($_POST['id'] ?? 0);
 
-    // ── Add / Edit role ──────────────────────────────────────────────────────
+    // â”€â”€ Add / Edit role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if ($action === 'add' || $action === 'edit') {
         $name        = sanitize($_POST['name'] ?? '');
         $slug        = sanitize($_POST['slug'] ?? '');
@@ -70,7 +78,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-    // ── Save permissions ─────────────────────────────────────────────────────
+    // â”€â”€ Save permissions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     } elseif ($action === 'save_permissions') {
         $roleSlug    = sanitize($_POST['role_slug'] ?? '');
         $permissions = $_POST['permissions'] ?? [];
@@ -78,11 +86,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($roleSlug)) {
             setFlash('danger', 'Invalid role.');
         } elseif ($roleSlug === 'admin') {
-            setFlash('warning', 'Admin role always has full access — permissions cannot be restricted.');
+            setFlash('warning', 'Admin role always has full access â€” permissions cannot be restricted.');
         } else {
             try {
                 // Create table if it doesn't exist yet (safe migration)
-                $db->exec("CREATE TABLE IF NOT EXISTS role_permissions (
+                appSafeDdl($db, "CREATE TABLE IF NOT EXISTS role_permissions (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     role_slug VARCHAR(100) NOT NULL,
                     permission VARCHAR(100) NOT NULL,
@@ -103,15 +111,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
-                // Clear permission cache for all sessions belonging to users with this role
-                // (PHP session cache cleared next login; instant clear not possible cross-session)
-                setFlash('success', "Permissions for '{$roleSlug}' saved successfully! Users with this role will see updated access on next page load.");
+                // Clear permission cache for all sessions and bump version for realtime
+                clearPermissionCache();
+                setFlash('success', "Permissions for '{$roleSlug}' saved successfully! Changes take effect immediately for all users.");
             } catch (PDOException $e) {
                 setFlash('danger', 'Error saving permissions: ' . $e->getMessage());
             }
         }
 
-    // ── Delete role ──────────────────────────────────────────────────────────
+    // â”€â”€ Delete role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     } elseif ($action === 'delete') {
         $stmt = $db->prepare("SELECT slug FROM roles WHERE id = ?");
         $stmt->execute([$id]);
@@ -125,6 +133,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $db->prepare("DELETE FROM role_permissions WHERE role_slug = ?")->execute([$role['slug']]);
                 }
                 $db->prepare("DELETE FROM roles WHERE id = ?")->execute([$id]);
+                clearPermissionCache();
                 setFlash('success', 'Role deleted successfully!');
             } catch (PDOException $e) {
                 setFlash('danger', 'Error deleting role.');
@@ -146,7 +155,7 @@ try {
         $permsByRole[$row['role_slug']][] = $row['permission'];
     }
 } catch (Exception $e) {
-    // Table might not exist yet — handled gracefully
+    // Table might not exist yet â€” handled gracefully
 }
 
 // Group permissions for display
@@ -289,7 +298,7 @@ include 'includes/header.php';
     </div>
 </div>
 
-<!-- ═══ Role Add/Edit Modal ═══ -->
+<!-- â•â•â• Role Add/Edit Modal â•â•â• -->
 <div class="modal-overlay" id="roleModal">
     <div class="modal">
         <div class="modal-header">
@@ -329,7 +338,7 @@ include 'includes/header.php';
     </div>
 </div>
 
-<!-- ═══ Permissions Modal ═══ -->
+<!-- â•â•â• Permissions Modal â•â•â• -->
 <div class="modal-overlay" id="permModal">
     <div class="modal" style="max-width: 620px;">
         <div class="modal-header">
@@ -342,7 +351,7 @@ include 'includes/header.php';
             <div class="modal-body">
                 <p class="text-muted" style="margin-bottom: 1rem; font-size: 13px;">
                     <i class="fas fa-info-circle"></i>
-                    Check the pages/features this role can access. Changes take effect on next page load.
+                    Check the pages/features this role can access. Changes take effect immediately for all users.
                 </p>
 
                 <?php foreach ($grouped as $groupName => $groupPerms): ?>
@@ -386,7 +395,7 @@ include 'includes/header.php';
 <script>
 const allPermsByRole = <?php echo json_encode($permsByRole); ?>;
 
-// ── Role Modal ────────────────────────────────────────────────────────────────
+// â”€â”€ Role Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function openRoleModal(action, role) {
     document.getElementById('roleFormAction').value = action;
     document.getElementById('roleModalTitle').textContent = action === 'add' ? 'Add Role' : 'Edit Role';
@@ -417,7 +426,7 @@ document.getElementById('roleName').addEventListener('input', function() {
     }
 });
 
-// ── Permission Modal ──────────────────────────────────────────────────────────
+// â”€â”€ Permission Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function openPermModal(roleSlug, roleName) {
     document.getElementById('permRoleSlug').value = roleSlug;
     document.getElementById('permModalTitle').textContent = 'Permissions: ' + roleName;
@@ -435,7 +444,7 @@ function toggleAll(state) {
     document.querySelectorAll('.perm-checkbox').forEach(cb => cb.checked = state);
 }
 
-// ── Delete Role ───────────────────────────────────────────────────────────────
+// â”€â”€ Delete Role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function deleteRole(id, name) {
     if (confirm('Delete role "' + name + '"? This will also remove all its permissions.')) {
         const form = document.createElement('form');

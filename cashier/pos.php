@@ -26,9 +26,6 @@ while ($row = $stmt->fetch()) {
 
 $vatPercent = (float) ($settings['vat_percent'] ?? 0);
 
-$protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-$baseUrl = $protocol . '://' . ($_SERVER['HTTP_HOST'] ?? '') . rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/');
-
 // Get categories - Filter by owner
 $stmt = $db->prepare("SELECT id, name FROM categories WHERE status = 'active' AND owner_id = ? ORDER BY name");
 $stmt->execute([$user['owner_id']]);
@@ -470,12 +467,17 @@ include 'includes/header.php';
     </div>
 </div>
 
-<script src="<?php echo $baseUrl; ?>/assets/js/jsbarcode.min.js"></script>
-<script src="<?php echo $baseUrl; ?>/assets/js/html5-qrcode.min.js"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/html5-qrcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/whatsapp-check.js'), ENT_QUOTES, 'UTF-8'); ?>"
+        data-check-endpoint="../admin/api/check-whatsapp.php"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/customer-dup-check.js'), ENT_QUOTES, 'UTF-8'); ?>"
+        data-lookup-endpoint="../admin/api/customer-lookup.php"></script>
 <script>
     // Global variables
     let cart = [];
     let paymentMethod = 'cash';
+    let currentPrintSaleId = null;
     const vatPercent = <?php echo $vatPercent; ?>;
     const currency = '<?php echo CURRENCY; ?>';
     const cartStorageKey = 'pos_cart_<?php echo $user['id']; ?>_<?php echo $store_id; ?>';
@@ -807,7 +809,7 @@ include 'includes/header.php';
         }
     }
 
-    // Camera barcode scanner
+    // Camera barcode scanner - All device support
     let html5QrScanner = null;
 
     function openCameraScan() {
@@ -815,31 +817,111 @@ include 'includes/header.php';
         const reader = document.getElementById('cameraScanReader');
         if (!modal || !reader) return;
         modal.classList.add('active');
-        reader.innerHTML = '';
+        reader.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:2rem; font-size:0.9rem;"><i class="fas fa-spinner fa-spin"></i> Requesting camera access...</p>';
         if (typeof Html5Qrcode === 'undefined') {
-            showScanError('Camera scanner library failed to load');
+            showScanError('Scanner library not loaded. Check internet connection.');
             modal.classList.remove('active');
             return;
         }
+
+        if (html5QrScanner) {
+            try { html5QrScanner.stop().then(() => html5QrScanner.clear()).catch(() => {}); } catch(e) {}
+            html5QrScanner = null;
+        }
+
+        Html5Qrcode.getCameras().then(function(cameras) {
+            if (!cameras || cameras.length === 0) {
+                showScanError('No camera found on this device');
+                modal.classList.remove('active');
+                return;
+            }
+
+            let selectedCamera = null;
+            for (let i = 0; i < cameras.length; i++) {
+                if (cameras[i].label && cameras[i].label.toLowerCase().includes('back')) {
+                    selectedCamera = cameras[i].id;
+                    break;
+                }
+            }
+            if (!selectedCamera) {
+                selectedCamera = cameras[cameras.length - 1].id;
+            }
+
+            try {
+                html5QrScanner = new Html5Qrcode('cameraScanReader');
+                html5QrScanner.start(
+                    selectedCamera,
+                    {
+                        fps: 15,
+                        qrbox: { width: 280, height: 120 },
+                        aspectRatio: 1.5,
+                        disableFlip: false,
+                        rememberLastUsedCamera: true
+                    },
+                    function(decodedText) {
+                        closeCameraScan();
+                        handleBarcodeScanned(decodedText.trim());
+                    },
+                    function() {}
+                ).catch(function(err) {
+                    console.log('Camera start failed, trying fallback...', err);
+                    html5QrScanner = null;
+                    openCameraScanFallback(modal);
+                });
+            } catch(e) {
+                console.log('Camera error, trying fallback...', e);
+                html5QrScanner = null;
+                openCameraScanFallback(modal);
+            }
+        }).catch(function(err) {
+            console.log('Camera permission denied or error:', err);
+            openCameraScanFallback(modal);
+        });
+    }
+
+    function openCameraScanFallback(modal) {
+        const reader = document.getElementById('cameraScanReader');
+        if (!reader) return;
+        reader.innerHTML = '';
+
+        if (typeof Html5Qrcode === 'undefined') {
+            showScanError('Scanner library not loaded');
+            modal.classList.remove('active');
+            return;
+        }
+
         try {
             html5QrScanner = new Html5Qrcode('cameraScanReader');
             html5QrScanner.start(
                 { facingMode: 'environment' },
                 {
-                    fps: 10,
-                    qrbox: { width: 250, height: 150 }
+                    fps: 15,
+                    qrbox: function(viewfinderWidth, viewfinderHeight) {
+                        let minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+                        return { width: Math.floor(minEdge * 0.7), height: Math.floor(minEdge * 0.4) };
+                    },
+                    aspectRatio: 1.0,
+                    disableFlip: false
                 },
-                function (decodedText) {
+                function(decodedText) {
                     closeCameraScan();
                     handleBarcodeScanned(decodedText.trim());
                 },
-                function () {}
-            ).catch(function (err) {
-                showScanError('Camera error: ' + (err && err.message ? err.message : err));
+                function() {}
+            ).catch(function(err) {
+                let msg = 'Camera access failed.';
+                if (err && err.toString().includes('NotAllowedError')) {
+                    msg = 'Camera permission denied. Please allow camera access in browser settings.';
+                } else if (err && err.toString().includes('NotFoundError')) {
+                    msg = 'No camera found on this device.';
+                } else if (err && err.toString().includes('NotReadableError')) {
+                    msg = 'Camera is being used by another app. Close other camera apps and try again.';
+                }
+                showScanError(msg);
                 modal.classList.remove('active');
             });
-        } catch (e) {
-            showScanError('Camera error: ' + e.message);
+        } catch(e) {
+            showScanError('Camera not supported on this browser');
             modal.classList.remove('active');
         }
     }
@@ -1144,6 +1226,7 @@ include 'includes/header.php';
             const result = await response.json();
 
             if (result.success) {
+                currentPrintSaleId = result.sale_id || null;
                 showInvoice(result.invoice);
                 cart = [];
                 updateCartDisplay();
@@ -1321,7 +1404,16 @@ include 'includes/header.php';
         location.reload();
     }
 
+    function markAsPrinted() {
+        if (currentPrintSaleId) {
+            const blob = new Blob([JSON.stringify({ id: currentPrintSaleId })], { type: 'application/json' });
+            navigator.sendBeacon('../admin/api/mark-printed.php', blob);
+            currentPrintSaleId = null;
+        }
+    }
+
     async function printInvoice() {
+        markAsPrinted();
         const content = document.getElementById('printableInvoice').outerHTML;
         
         // Pre-fetch all QR images as base64 data URIs
@@ -1350,7 +1442,7 @@ include 'includes/header.php';
             <head>
                 <title>Invoice - <?php echo sanitize($settings['shop_name'] ?? 'POS'); ?></title>
                 <meta charset="utf-8">
-                <link rel="stylesheet" href="<?php echo $baseUrl; ?>/assets/css/hind-siliguri.css">
+                <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
                 <style>
                     * { margin: 0; padding: 0; box-sizing: border-box; }
                     #printableInvoice * { font-weight: 900 !important; color: #000 !important; }
@@ -1367,7 +1459,7 @@ include 'includes/header.php';
                         @page { size: A4; margin: 5mm; }
                     }
                 </style>
-<script src="<?php echo $baseUrl; ?>\/assets\/js\/jsbarcode.min.js"><\/script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"><\/script>
             </head>
             <body>
                 <div style="max-width: 800px; margin: 0 auto; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);">
@@ -1464,11 +1556,28 @@ include 'includes/header.php';
     // Create Customer Functions
     function openCustomerModal() {
         document.getElementById('createCustomerModal').classList.add('active');
+        const _nameInp = document.querySelector('#createCustomerModal input[name="name"]');
+        if (_nameInp) {
+            _nameInp.value = 'SC ';
+            setTimeout(() => { _nameInp.focus(); _nameInp.setSelectionRange(_nameInp.value.length, _nameInp.value.length); }, 100);
+        }
+
+        // Wired once, on first open. The listener lives on the input, which
+        // survives the form.reset() in closeCustomerModal.
+        const _phoneInp = document.getElementById('custPhoneInput');
+        if (_phoneInp && window.PosCustomerDup && !_phoneInp.dataset.dupWired) {
+            _phoneInp.dataset.dupWired = '1';
+            window.PosCustomerDup.attach(_phoneInp, document.getElementById('custPhoneDup'));
+        }
     }
 
     function closeCustomerModal() {
         document.getElementById('createCustomerModal').classList.remove('active');
         document.getElementById('createCustomerForm').reset();
+        // The form reset empties the phone field but leaves the hint text behind,
+        // which would greet the next customer with the previous one's warning.
+        const _dup = document.getElementById('custPhoneDup');
+        if (_dup) { _dup.textContent = ''; }
     }
 
     async function submitCustomerForm(e) {
@@ -1479,6 +1588,29 @@ include 'includes/header.php';
         submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
 
         try {
+            // The hint under the phone field already says this number is saved.
+            // Ask once more here, because this is the last moment before a second
+            // row exists - and still allow it, since one number can legitimately
+            // belong to two people.
+            const phoneField = document.getElementById('custPhoneInput');
+            if (phoneField && window.PosCustomerDup) {
+                const dupes = await new Promise(resolve => {
+                    window.PosCustomerDup.find(phoneField.value, 0, res => resolve(res.matches || []));
+                });
+                if (dupes.length) {
+                    const who = dupes.map(d => d.name).join(', ');
+                    const msg = dupes.some(d => d.orphaned)
+                        ? `Ei number ta already save ache (${who}).\n\nKono shop er sathe jode noy.\n\nEktar beshi row banbe. Thik chole gele Save kore ese nao, noyto Cancel kore din.`
+                        : `Ei number ta already save ache (${who}).\n\nEktar beshi row banbe. Thik chole gele Save kore ese nao, noyto Cancel kore din.`;
+                    if (!confirm(msg)) {
+                        submitBtn.disabled = false;
+                        submitBtn.innerHTML = 'Save Customer';
+                        phoneField.focus();
+                        return;
+                    }
+                }
+            }
+
             const formData = new FormData(form);
             const response = await fetch('../admin/api/create-customer.php', {
                 method: 'POST',
@@ -1493,6 +1625,12 @@ include 'includes/header.php';
 
                 closeCustomerModal();
                 alert('Customer added successfully!');
+
+                // Saved, so the sale can carry on. The WhatsApp probe runs
+                // behind it and reports back on its own.
+                if (window.PosWhatsApp) {
+                    window.PosWhatsApp.verifyAndReport(result.customer);
+                }
             } else {
                 alert(result.message || 'Error adding customer');
             }
@@ -1517,11 +1655,12 @@ include 'includes/header.php';
             <form id="createCustomerForm" onsubmit="submitCustomerForm(event)">
                 <div class="form-group">
                     <label>Name *</label>
-                    <input type="text" name="name" class="form-control" required>
+                    <input type="text" name="name" class="form-control" value="SC " required>
                 </div>
                 <div class="form-group" style="margin-top: 10px;">
                     <label>Phone</label>
-                    <input type="text" name="phone" class="form-control">
+                    <input type="text" name="phone" id="custPhoneInput" class="form-control" autocomplete="off">
+                    <div class="cust-dup" id="custPhoneDup"></div>
                 </div>
                 <div class="form-group" style="margin-top: 10px;">
                     <label>Email</label>

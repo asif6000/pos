@@ -1,15 +1,41 @@
-# PHP session files
-/sessions/
+# ==========================================
+# SECRETS - NEVER COMMIT THESE
+# ==========================================
+/config/db.php
+*.env
+!*.env.example
+whatsapp-server/auth*
+whatsapp-server/session/
+whatsapp-server/.wwebjs_cache/
+/_whatsappweb-backup/
+login-qr.png
+qr-latest.png
 
-# OS files
+# ==========================================
+# RUNTIME / GENERATED FILES
+# ==========================================
+/sessions/
+/uploads/
+*.log
+admin/error_log
+whatsapp-server/*.log
+whatsapp-server/invoice-render-test.png
+
+# Local-only database dumps (contain real shop data)
+/oznfsceg_smart.sql
+/pos_schema.sql
+
+# ==========================================
+# DEPENDENCIES
+# ==========================================
+node_modules/
+
+# ==========================================
+# OS / EDITOR
+# ==========================================
 Thumbs.db
 .DS_Store
 Desktop.ini
-
-# IDE
 .vscode/
 .idea/
 *.swp
-
-# Logs
-*.log

@@ -4,7 +4,7 @@
  * Shows pricing and registration options
  */
 
-require_once 'config/db.php';
+require_once'config/db.php';
 startSecureSession();
 
 // Redirect if already logged in
@@ -13,7 +13,7 @@ if (isLoggedIn()) {
     if ($user['role'] === 'admin') {
         redirect('admin/dashboard.php');
     } else {
-        redirect('cashier/pos.php');
+        redirect('staff/dashboard.php');
     }
 }
 ?>
@@ -27,8 +27,9 @@ if (isLoggedIn()) {
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="assets/css/hind-siliguri.css">
+    <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="icon" type="image/png" href="<?php echo htmlspecialchars(assetUrl('assets/img/ava_logo.png'), ENT_QUOTES, 'UTF-8'); ?>">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -912,7 +913,7 @@ if (isLoggedIn()) {
     <!-- ─── NAVBAR ─── -->
     <nav class="navbar">
         <div class="navbar-logo">
-            <img src="assets/img/ava_logo.png" alt="AVA IT Solution">
+            <img src="<?php echo htmlspecialchars(assetUrl('assets/img/ava_logo.png'), ENT_QUOTES, 'UTF-8'); ?>" alt="AVA IT Solution">
             <div class="navbar-logo-text">
                 <span class="pos-badge">POS SYSTEM</span>
             </div>
@@ -930,14 +931,11 @@ if (isLoggedIn()) {
         <div class="navbar-right">
             <div class="navbar-phone">
                 <i class="fas fa-phone-alt"></i>
-                +880 1234-567890
-            </div>
+                +880 1234-567890</div>
             <a href="auth/login.php" class="btn-nav-login">
-                <i class="fas fa-sign-in-alt"></i> Login
-            </a>
+                <i class="fas fa-sign-in-alt"></i> Login</a>
             <a href="auth/register.php" class="btn-nav-signup">
-                <i class="fas fa-user-plus"></i> Sign Up
-            </a>
+                <i class="fas fa-user-plus"></i> Sign Up</a>
         </div>
     </nav>
 
@@ -946,10 +944,9 @@ if (isLoggedIn()) {
         <div class="hero-left">
             <div class="hero-badge">
                 <i class="fas fa-bolt"></i>
-                Smart POS Solution for Modern Business
-            </div>
+                Smart POS Solution for Modern Business</div>
             <h1 class="hero-title">
-                Smart POS System<br>for <span class="highlight">Smart Business</span>
+                Smart POS System<br>for<span class="highlight">Smart Business</span>
             </h1>
             <p class="hero-desc">
                 AVA IT SOLUTION POS System helps you manage sales, inventory,<br>
@@ -958,10 +955,10 @@ if (isLoggedIn()) {
             </p>
             <div class="hero-buttons">
                 <a href="auth/register.php" class="btn-hero-primary">
-                    Request Demo <i class="fas fa-arrow-right"></i>
+                    Request Demo<i class="fas fa-arrow-right"></i>
                 </a>
                 <a href="#features" class="btn-hero-outline">
-                    Explore Features <i class="fas fa-th"></i>
+                    Explore Features<i class="fas fa-th"></i>
                 </a>
             </div>
             <div class="hero-features">
@@ -996,7 +993,7 @@ if (isLoggedIn()) {
                     <div class="pos-monitor">
                         <div class="pos-monitor-header">
                             <div class="logo-small">
-                                <img src="assets/img/ava_logo.png" alt="AVA">
+                                <img src="<?php echo htmlspecialchars(assetUrl('assets/img/ava_logo.png'), ENT_QUOTES, 'UTF-8'); ?>" alt="AVA">
                             </div>
                             <div class="search-bar">Search product...</div>
                             <div style="font-size:0.6rem;color:#9ca3af;">Admin ▾</div>
@@ -1023,42 +1020,42 @@ if (isLoggedIn()) {
                                     <div class="pos-product">
                                         <div class="pos-product-icon"><i class="fas fa-tshirt"></i></div>
                                         <div class="pos-product-name">T-Shirt</div>
-                                        <div class="pos-product-price">৳450</div>
+                                        <div class="pos-product-price">450</div>
                                     </div>
                                     <div class="pos-product">
                                         <div class="pos-product-icon"><i class="fas fa-tshirt"></i></div>
                                         <div class="pos-product-name">Shirt</div>
-                                        <div class="pos-product-price">৳650</div>
+                                        <div class="pos-product-price">650</div>
                                     </div>
                                     <div class="pos-product">
                                         <div class="pos-product-icon"><i class="fas fa-socks"></i></div>
                                         <div class="pos-product-name">Jeans</div>
-                                        <div class="pos-product-price">৳1200</div>
+                                        <div class="pos-product-price">1200</div>
                                     </div>
                                     <div class="pos-product">
                                         <div class="pos-product-icon"><i class="fas fa-shoe-prints"></i></div>
                                         <div class="pos-product-name">Shoes</div>
-                                        <div class="pos-product-price">৳1600</div>
+                                        <div class="pos-product-price">1600</div>
                                     </div>
                                     <div class="pos-product">
                                         <div class="pos-product-icon"><i class="fas fa-clock"></i></div>
                                         <div class="pos-product-name">Watch</div>
-                                        <div class="pos-product-price">৳2000</div>
+                                        <div class="pos-product-price">2000</div>
                                     </div>
                                     <div class="pos-product">
                                         <div class="pos-product-icon"><i class="fas fa-hat-cowboy"></i></div>
                                         <div class="pos-product-name">Cap</div>
-                                        <div class="pos-product-price">৳300</div>
+                                        <div class="pos-product-price">300</div>
                                     </div>
                                     <div class="pos-product">
                                         <div class="pos-product-icon"><i class="fas fa-glasses"></i></div>
                                         <div class="pos-product-name">Sunglass</div>
-                                        <div class="pos-product-price">৳700</div>
+                                        <div class="pos-product-price">700</div>
                                     </div>
                                     <div class="pos-product">
                                         <div class="pos-product-icon"><i class="fas fa-tag"></i></div>
                                         <div class="pos-product-name">Belt</div>
-                                        <div class="pos-product-price">৳500</div>
+                                        <div class="pos-product-price">500</div>
                                     </div>
                                 </div>
                             </div>
@@ -1067,9 +1064,9 @@ if (isLoggedIn()) {
                                 <div class="pos-cart-item"><span>T-Shirt</span><span>x1</span></div>
                                 <div class="pos-cart-item"><span>Jeans</span><span>x1</span></div>
                                 <div class="pos-cart-item"><span>Watch</span><span>x1</span></div>
-                                <div style="font-size:0.55rem;color:#6b7280;margin:5px 0 2px;">Subtotal: ৳4150</div>
-                                <div style="font-size:0.55rem;color:#6b7280;margin-bottom:4px;">Discount: ৳150</div>
-                                <div class="pos-cart-total">Checkout ৳4000</div>
+                                <div style="font-size:0.55rem;color:#6b7280;margin:5px 0 2px;">Subtotal: 4150</div>
+                                <div style="font-size:0.55rem;color:#6b7280;margin-bottom:4px;">Discount: 150</div>
+                                <div class="pos-cart-total">Checkout 4000</div>
                             </div>
                         </div>
                     </div>
@@ -1143,16 +1140,15 @@ if (isLoggedIn()) {
         <div class="features-inner">
             <div class="features-left-col">
                 <div class="features-badge">
-                    <i class="fas fa-bolt"></i> Powerful Features
-                </div>
+                    <i class="fas fa-bolt"></i> Powerful Features</div>
                 <h2 class="features-title">
-                    Everything You Need<br>in One <span class="highlight">POS System</span>
+                    Everything You Need<br>in One<span class="highlight">POS System</span>
                 </h2>
                 <p class="features-desc">
                     Manage your business smarter and faster with our all-in-one POS solution.
                 </p>
                 <a href="auth/register.php" class="btn-view-all">
-                    View All Features <i class="fas fa-arrow-right"></i>
+                    View All Features<i class="fas fa-arrow-right"></i>
                 </a>
             </div>
 
@@ -1161,37 +1157,37 @@ if (isLoggedIn()) {
                     <div class="feature-card-icon blue"><i class="fas fa-cash-register"></i></div>
                     <h4>Sales Management</h4>
                     <p>Fast billing, multiple payment methods and invoice printing.</p>
-                    <a href="auth/register.php" class="learn-more">Learn more <i class="fas fa-arrow-right"></i></a>
+                    <a href="auth/register.php" class="learn-more">Learn more<i class="fas fa-arrow-right"></i></a>
                 </div>
                 <div class="feature-card">
                     <div class="feature-card-icon green"><i class="fas fa-boxes"></i></div>
                     <h4>Inventory Management</h4>
                     <p>Track stock in real-time, low stock alerts and inventory reports.</p>
-                    <a href="auth/register.php" class="learn-more">Learn more <i class="fas fa-arrow-right"></i></a>
+                    <a href="auth/register.php" class="learn-more">Learn more<i class="fas fa-arrow-right"></i></a>
                 </div>
                 <div class="feature-card">
                     <div class="feature-card-icon orange"><i class="fas fa-users"></i></div>
                     <h4>Customer Management</h4>
                     <p>Manage customer data, purchase history and loyalty points.</p>
-                    <a href="auth/register.php" class="learn-more">Learn more <i class="fas fa-arrow-right"></i></a>
+                    <a href="auth/register.php" class="learn-more">Learn more<i class="fas fa-arrow-right"></i></a>
                 </div>
                 <div class="feature-card">
                     <div class="feature-card-icon purple"><i class="fas fa-chart-bar"></i></div>
                     <h4>Reports & Analytics</h4>
                     <p>Powerful reports to analyze your business growth and profit.</p>
-                    <a href="auth/register.php" class="learn-more">Learn more <i class="fas fa-arrow-right"></i></a>
+                    <a href="auth/register.php" class="learn-more">Learn more<i class="fas fa-arrow-right"></i></a>
                 </div>
                 <div class="feature-card">
                     <div class="feature-card-icon pink"><i class="fas fa-barcode"></i></div>
                     <h4>Barcode & Label</h4>
                     <p>Generate barcodes and print labels for your products.</p>
-                    <a href="auth/register.php" class="learn-more">Learn more <i class="fas fa-arrow-right"></i></a>
+                    <a href="auth/register.php" class="learn-more">Learn more<i class="fas fa-arrow-right"></i></a>
                 </div>
                 <div class="feature-card">
                     <div class="feature-card-icon teal"><i class="fas fa-store"></i></div>
                     <h4>Multi Branch Support</h4>
                     <p>Manage multiple branches from one central dashboard.</p>
-                    <a href="auth/register.php" class="learn-more">Learn more <i class="fas fa-arrow-right"></i></a>
+                    <a href="auth/register.php" class="learn-more">Learn more<i class="fas fa-arrow-right"></i></a>
                 </div>
             </div>
         </div>

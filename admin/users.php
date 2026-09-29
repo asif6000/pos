@@ -38,6 +38,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             setFlash('danger', 'Password is required for new users.');
         } elseif ($action === 'add' && strlen($password) < 6) {
             setFlash('danger', 'Password must be at least 6 characters.');
+        } elseif (!$db->query("SELECT COUNT(*) FROM roles WHERE slug = " . $db->quote($role))->fetchColumn()) {
+            // The role has to exist on the Roles page. It did not used to
+            // matter: users.role was an ENUM of four literals that quietly
+            // truncated anything else to '', so a bad slug produced a user with
+            // no role and therefore no permissions, with nothing reported. The
+            // column is a VARCHAR now, so the same typo would store verbatim
+            // and hit the same wall later and quieter.
+            setFlash('danger', "Role '" . htmlspecialchars($role, ENT_QUOTES, 'UTF-8')
+                . "' does not exist. Create it on the Roles page first.");
         } else {
             try {
                 // Check for duplicate email

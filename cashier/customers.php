@@ -31,7 +31,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $user = getCurrentUser();
             $stmt = $db->prepare("INSERT INTO customers (name, phone, address, owner_id) VALUES (?, ?, ?, ?)");
             $stmt->execute([$name, $phone, $address, $user['owner_id']]);
-            setFlash('success', 'Customer added successfully!');
+            $newId = $db->lastInsertId();
+
+            require_once '../config/google_contacts.php';
+            $googleSync = syncCustomerToGoogleContacts([
+                'id'      => $newId,
+                'name'    => $name,
+                'phone'   => $phone,
+                'email'   => '',
+                'address' => $address
+            ], $user['owner_id']);
+
+            if (!empty($googleSync['success'])) {
+                setFlash('success', 'Customer added & synced to Google Contacts!');
+            } else {
+                setFlash('success', 'Customer added successfully!');
+            }
         } catch (PDOException $e) {
             setFlash('danger', 'Error adding customer.');
         }
@@ -133,7 +148,7 @@ include 'includes/header.php';
             <div class="modal-body">
                 <div class="form-group">
                     <label class="form-label required">Name</label>
-                    <input type="text" name="name" class="form-control" required>
+                    <input type="text" name="name" class="form-control" value="SC " required>
                 </div>
                 <div class="form-group">
                     <label class="form-label">Phone</label>

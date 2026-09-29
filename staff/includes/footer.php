@@ -1,9 +1,9 @@
-</div>
+﻿</div>
 </main>
 </div>
 
 <!-- Scripts -->
-<script src="../assets/js/app.js"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/app.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
 </body>
 
 </html>

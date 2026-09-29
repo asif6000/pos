@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * Cashier Header Component
  * Simplified navigation for cashiers
@@ -41,9 +41,10 @@ $shopName = $settings['shop_name'] ?? 'POS System';
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../assets/css/hind-siliguri.css">
+    <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="../assets/css/style.css">
+    <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/style.css'), ENT_QUOTES, 'UTF-8'); ?>">
+    <link rel="icon" type="image/png" href="<?php echo htmlspecialchars(assetUrl('assets/img/ava_logo.png'), ENT_QUOTES, 'UTF-8'); ?>">
 </head>
 
 <body>
@@ -58,21 +59,38 @@ $shopName = $settings['shop_name'] ?? 'POS System';
             </div>
 
             <nav class="sidebar-nav">
-                <div class="nav-section">
-                    <div class="nav-section-title">Main</div>
-                    <a href="pos.php" class="nav-item <?php echo $currentPage === 'pos' ? 'active' : ''; ?>">
-                        <i class="fas fa-shopping-bag"></i>
-                        <span>Shopping</span>
-                    </a>
-                    <a href="sales.php" class="nav-item <?php echo $currentPage === 'sales' ? 'active' : ''; ?>">
-                        <i class="fas fa-receipt"></i>
-                        <span>My Sales</span>
-                    </a>
-                    <a href="customers.php" class="nav-item <?php echo $currentPage === 'customers' ? 'active' : ''; ?>">
-                        <i class="fas fa-users"></i>
-                        <span>Customers</span>
-                    </a>
-                </div>
+                    <?php
+                    // What this role may open, in one place. Both this sidebar and
+                    // the cashier one walk the same list, so a permission granted on
+                    // the Roles page shows up here the same way it does in the admin
+                    // menu. Nothing is printed for a role that can open none of it.
+                    $navItems = permissionNavItems();
+                    $navShown = array();
+                    foreach ($navItems as $ni) {
+                        if (hasPermission($ni['need'])) { $navShown[] = $ni; }
+                    }
+                    ?>
+                    <?php if ($navShown): ?>
+                    <div class="nav-section">
+                        <div class="nav-section-title">Main</div>
+                        <?php foreach ($navShown as $ni): ?>
+                        <a href="../admin/<?php echo $ni['page']; ?>"
+                            class="nav-item <?php echo $currentPage === basename($ni['page'], '.php') ? 'active' : ''; ?>">
+                            <i class="fas <?php echo $ni['icon']; ?>"></i>
+                            <span><?php echo sanitize($ni['label']); ?></span>
+                        </a>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php endif; ?>
+                    <?php if (hasPermission('staff') || staffProfileExists($user)): ?>
+                    <div class="nav-section">
+                        <div class="nav-section-title">My Account</div>
+                        <a href="dashboard.php" class="nav-item <?php echo $currentPage === 'dashboard' ? 'active' : ''; ?>">
+                            <i class="fas fa-user-circle"></i>
+                            <span>My Staff Profile</span>
+                        </a>
+                    </div>
+                    <?php endif; ?>
             </nav>
 
             <div class="sidebar-footer">
@@ -84,7 +102,7 @@ $shopName = $settings['shop_name'] ?? 'POS System';
                         <div class="user-name">
                             <?php echo sanitize($user['name']); ?>
                         </div>
-                        <div class="user-role">Cashier</div>
+                        <div class="user-role"><?php echo sanitize(ucfirst((string)($user['role'] ?? 'cashier'))); ?></div>
                     </div>
                     <a href="../logout.php" class="header-btn" title="Logout">
                         <i class="fas fa-sign-out-alt"></i>

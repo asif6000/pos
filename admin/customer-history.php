@@ -128,12 +128,24 @@ include 'includes/header.php';
                     <th>Total</th>
                     <th>Payment</th>
                     <th>Cashier</th>
-                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($purchases)): ?>
-                    <tr><td colspan="7" class="text-center text-muted">No purchases yet</td></tr>
+                    <!-- A real empty state, not one grey line. Most customers in a
+                         young shop have never bought, so this is the common case
+                         rather than an edge case - and a single English sentence on
+                         an otherwise Bengali page reads as a failed load rather
+                         than as a fact about the customer. -->
+                    <tr><td colspan="6">
+                        <div class="cust-empty">
+                            <i class="fas fa-receipt"></i>
+                            <p class="mb-1"><strong><?php echo sanitize($customer['name']); ?></strong>
+                                ekhono kono purchase kore nai.</p>
+                            <p class="mb-0">Ei customer er kono sale record nai, tai kono invoice dekhano
+                                jay na. Jodi eshe kine, ei page khulei invoice dekhabe.</p>
+                        </div>
+                    </td></tr>
                 <?php else: ?>
                     <?php foreach ($purchases as $purchase): ?>
                         <tr>
@@ -145,11 +157,6 @@ include 'includes/header.php';
                                 <span class="badge badge-primary"><?php echo ucfirst($purchase['payment_method']); ?></span>
                             </td>
                             <td><?php echo sanitize($purchase['cashier_name']); ?></td>
-                            <td>
-                                <a href="sales.php?search=<?php echo urlencode($purchase['invoice_number']); ?>" class="btn btn-sm btn-outline">
-                                    <i class="fas fa-eye"></i> View
-                                </a>
-                            </td>
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>
