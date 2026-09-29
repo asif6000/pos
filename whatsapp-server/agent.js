@@ -209,6 +209,22 @@ let lastQrHash = null;
  */
 let lastHelloAt = 0;
 
+/**
+ * When the poll loop last called home, successful or not.
+ *
+ * The heartbeat uses this to tell the two cases apart, and the distinction is the
+ * whole reason it is not simply another retry. A loop that is failing because the
+ * shop PC has no internet is already backing off, on purpose, and the heartbeat
+ * joining in would double the request rate against a link that is known to be
+ * down. A loop that is wedged makes no attempt at all - that silence is the only
+ * thing that separates the two from here.
+ *
+ * So the rule is a ceiling rather than a comparison with the poll interval: a
+ * live loop backs off to at most 30s between attempts, so anything longer than
+ * that is not a slow loop, it is a stopped one.
+ */
+let lastLoopTryAt = 0;
+
 /** Set while a hello is in flight, so two callers cannot overlap on the same row. */
 let helloBusy = false;
 
@@ -219,7 +235,7 @@ let helloBusy = false;
  * last_seen stops moving, so a hello that timed out on a broken link has told
  * it nothing and must not look like progress.
  */
-async function sayHello() {
+async function sayHello(fromLoop = false) {
   const payload = {
     agent_id: AGENT_ID,
     status: state.status,
@@ -242,6 +258,11 @@ async function sayHello() {
     // and the POS would sit on an old picture.
     lastQrHash = null;
   }
+
+  // Stamped only for the loop's own calls. The heartbeat passing true here would
+  // have the heartbeat vouch for itself - it would keep telling itself the loop
+  // is alive, which is precisely the question it exists to answer.
+  if (fromLoop) lastLoopTryAt = Date.now();
 
   const res = await call('hello', payload);
   if (!res.ok) return null;
@@ -656,20 +677,32 @@ async function step(name, fn, ms) {
 const HEARTBEAT_MS = 15000;   // 3 inside the POS's 45s staleness window
 const STUCK_MS = 60000;       // long enough that no honest step is called stuck
 
+/**
+ * The longest the poll loop may legitimately go between calling home.
+ *
+ * Its worst-case backoff is 30s (POLL_MS * 8, itself clamped at 30000), so a loop
+ * that has been silent for longer than this is not backing off - it is stuck
+ * inside something that never returns. This is the line the heartbeat waits for,
+ * and it is why the heartbeat stays quiet on a dead link rather than adding its
+ * own retries to the loop's: a failing loop is still a running loop.
+ */
+const MAX_LOOP_GAP_MS = 30000;
+
 /** Consecutive failed hellos, so a dead link is not tried twice as often. */
 let heartbeatFails = 0;
 
 /**
- * When a hello was last *attempted*, successful or not.
+ * When the *heartbeat* last called home, successful or not.
  *
- * Separate from lastHelloAt because that one only moves on success - which is
- * what makes it the right answer to "is the bridge reporting?" and the wrong
- * answer to "how long ago did we try?". Backoff has to use this one; measuring
- * it against a timestamp that only advances on success means the longer the
- * link stays down the further into the past it reads, and the backoff never
- * engages at all.
+ * Deliberately its own timestamp rather than a shared "last attempt" with
+ * sayHello(). Sharing it looks harmless and is not: on a dead link both callers
+ * write the same field, so each one's backoff measures from the other's attempt
+ * and neither ever reaches its own threshold. The result is two callers each
+ * believing they are backing off while the pair retries flat out - which is the
+ * one outcome the loop's backoff exists to prevent, arrived at by adding code
+ * meant to help.
  */
-let lastTryAt = 0;
+let heartbeatTriedAt = 0;
 
 /**
  * Say hello only when the loop has stopped doing it for us.
@@ -688,9 +721,14 @@ async function heartbeatTick() {
   if (stopping || helloBusy) return;
   if (Date.now() - lastHelloAt < HEARTBEAT_MS) return;   // the loop is doing fine
 
+  // The loop has not called home in longer than it ever could between retries of
+  // its own, so it is not slow - it is stopped. Everything above this line is
+  // about standing down; everything below is taking over.
+  if (Date.now() - lastLoopTryAt < MAX_LOOP_GAP_MS) return;
+
   if (heartbeatFails > 0) {
     const backoff = Math.min(30000, HEARTBEAT_MS * Math.min(8, heartbeatFails));
-    if (Date.now() - lastTryAt < backoff) return;
+    if (Date.now() - heartbeatTriedAt < backoff) return;
   }
 
   // Said once the step has been held long enough to be a fault rather than a
@@ -706,7 +744,7 @@ async function heartbeatTick() {
   }
 
   helloBusy = true;
-  lastTryAt = Date.now();
+  heartbeatTriedAt = Date.now();
   try {
     if (await sayHello()) heartbeatFails = 0;
     else heartbeatFails++;
@@ -734,7 +772,7 @@ async function loop() {
 
   while (!stopping) {
     try {
-      const hello = await sayHello();
+      const hello = await sayHello(true);
       if (!hello) {
         fails++;
         await sleep(Math.min(30000, POLL_MS * Math.min(8, fails)));
