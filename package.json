@@ -1,0 +1,14 @@
+{
+  "name": "pos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "POS system with a PHP application and Node.js API server",
+  "workspaces": ["server"],
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
