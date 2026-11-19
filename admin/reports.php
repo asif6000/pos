@@ -17,6 +17,12 @@ $db = getDB();
 $user = getCurrentUser();
 $ownerId = $user['owner_id'];
 
+// A counter account (staff/cashier) reads every part of this report through its
+// own bills only. The fragment is empty for everyone else, so an owner's report
+// is exactly what it always was.
+list($ownScope, $ownParams) = ownSalesScopeSql($user);
+$ownUserId = empty($ownScope) ? 0 : (int)$user['id'];
+
 // Get date range
 $reportType = sanitize($_GET['type'] ?? 'daily');
 $dateFrom = sanitize($_GET['date_from'] ?? date('Y-m-d'));
@@ -44,9 +50,9 @@ $stmt = $db->prepare("
         COALESCE(AVG(s.total), 0) as avg_sale
     FROM sales s
     JOIN users u ON s.user_id = u.id
-    WHERE u.owner_id = ? AND DATE(s.created_at) BETWEEN ? AND ?
+    WHERE " . saleOwnerScopeSql($ownerId) . "$ownScope AND DATE(s.created_at) BETWEEN ? AND ?
 ");
-$stmt->execute([$ownerId, $dateFrom, $dateTo]);
+$stmt->execute(array_merge([$ownerId, $ownerId], $ownParams, [$dateFrom, $dateTo]));
 $summary = $stmt->fetch();
 
 // Sales by payment method - Filter by owner
@@ -54,11 +60,11 @@ $stmt = $db->prepare("
     SELECT s.payment_method, COUNT(s.id) as count, COALESCE(SUM(s.total), 0) as total
     FROM sales s
     JOIN users u ON s.user_id = u.id
-    WHERE u.owner_id = ? AND DATE(s.created_at) BETWEEN ? AND ?
+    WHERE " . saleOwnerScopeSql($ownerId) . "$ownScope AND DATE(s.created_at) BETWEEN ? AND ?
     GROUP BY s.payment_method
     ORDER BY total DESC
 ");
-$stmt->execute([$ownerId, $dateFrom, $dateTo]);
+$stmt->execute(array_merge([$ownerId, $ownerId], $ownParams, [$dateFrom, $dateTo]));
 $paymentStats = $stmt->fetchAll();
 
 // Daily sales chart data - Filter by owner
@@ -66,12 +72,44 @@ $stmt = $db->prepare("
     SELECT DATE(s.created_at) as sale_date, COALESCE(SUM(s.total), 0) as daily_total
     FROM sales s
     JOIN users u ON s.user_id = u.id
-    WHERE u.owner_id = ? AND DATE(s.created_at) BETWEEN ? AND ?
+    WHERE " . saleOwnerScopeSql($ownerId) . "$ownScope AND DATE(s.created_at) BETWEEN ? AND ?
     GROUP BY DATE(s.created_at)
     ORDER BY sale_date
 ");
-$stmt->execute([$ownerId, $dateFrom, $dateTo]);
+$stmt->execute(array_merge([$ownerId, $ownerId], $ownParams, [$dateFrom, $dateTo]));
 $dailySales = $stmt->fetchAll();
+
+// What returns and exchanges settled in cash, day by day.
+//
+// A sale is booked whole, but an exchange only ever settles the difference between
+// what the customer handed back and what they took - and that difference is not a
+// sale, so it never appears in `sales` at all. Only that difference is folded in
+// below: a plain return refund is already gone from the original sale, so taking it
+// off again would remove the same money twice.
+$returnsDaily = returnCashDaily($ownerId, $dateFrom, $dateTo, $ownUserId ?? null);
+foreach ($dailySales as $i => $day) {
+    $d = (string)$day['sale_date'];
+    $dailySales[$i]['exchange_extra'] = $returnsDaily[$d]['extra'] ?? 0.0;
+    $dailySales[$i]['return_refund'] = $returnsDaily[$d]['refund'] ?? 0.0;
+    $dailySales[$i]['daily_total'] = (float)$day['daily_total'] + ($returnsDaily[$d]['net_effect'] ?? 0.0);
+    unset($returnsDaily[$d]);
+}
+// A day that moved money only through a return has no sales row to hang it on,
+// and would simply be missing from the report.
+foreach ($returnsDaily as $d => $ret) {
+    $dailySales[] = [
+        'sale_date' => $d,
+        'daily_total' => $ret['net_effect'],
+        'exchange_extra' => $ret['extra'],
+        'return_refund' => $ret['refund'],
+    ];
+}
+usort($dailySales, function ($a, $b) {
+    return strcmp((string)$a['sale_date'], (string)$b['sale_date']);
+});
+// A counter account reads the returns window through its own sales too - the
+// same rule the sales figures above follow.
+$returnsPeriod = returnCashSummary($ownerId, $dateFrom, $dateTo, null, $ownUserId ?: null);
 
 // Top selling products - Filter by owner
 $stmt = $db->prepare("
@@ -79,12 +117,12 @@ $stmt = $db->prepare("
     FROM sale_items si
     JOIN sales s ON si.sale_id = s.id
     JOIN users u ON s.user_id = u.id
-    WHERE u.owner_id = ? AND DATE(s.created_at) BETWEEN ? AND ?
+    WHERE " . saleOwnerScopeSql($ownerId) . "$ownScope AND DATE(s.created_at) BETWEEN ? AND ?
     GROUP BY si.product_id, si.product_name
     ORDER BY total_qty DESC
     LIMIT 10
 ");
-$stmt->execute([$ownerId, $dateFrom, $dateTo]);
+$stmt->execute(array_merge([$ownerId, $ownerId], $ownParams, [$dateFrom, $dateTo]));
 $topProducts = $stmt->fetchAll();
 
 // Sales by category - Filter by owner
@@ -95,23 +133,31 @@ $stmt = $db->prepare("
     JOIN users u ON s.user_id = u.id
     JOIN products p ON si.product_id = p.id
     LEFT JOIN categories c ON p.category_id = c.id
-    WHERE u.owner_id = ? AND DATE(s.created_at) BETWEEN ? AND ?
+    WHERE " . saleOwnerScopeSql($ownerId) . "$ownScope AND DATE(s.created_at) BETWEEN ? AND ?
     GROUP BY p.category_id, c.name
     ORDER BY total_revenue DESC
 ");
-$stmt->execute([$ownerId, $dateFrom, $dateTo]);
+$stmt->execute(array_merge([$ownerId, $ownerId], $ownParams, [$dateFrom, $dateTo]));
 $categoryStats = $stmt->fetchAll();
 
 // Hourly sales (for today if daily report)
 if ($reportType === 'daily' && $dateFrom === date('Y-m-d')) {
+    // A counter account's hourly shape is its own bills. The wider scopes keep
+    // the shape they always had.
+    $ownHour = '';
+    $hourParams = [$dateFrom];
+    if ($ownUserId) {
+        $ownHour = " AND user_id = ?";
+        $hourParams[] = $ownUserId;
+    }
     $stmt = $db->prepare("
         SELECT HOUR(created_at) as hour, COUNT(*) as count, COALESCE(SUM(total), 0) as total
         FROM sales 
-        WHERE DATE(created_at) = ?
+        WHERE DATE(created_at) = ?$ownHour
         GROUP BY HOUR(created_at)
         ORDER BY hour
     ");
-    $stmt->execute([$dateFrom]);
+    $stmt->execute($hourParams);
     $hourlyStats = $stmt->fetchAll();
 } else {
     $hourlyStats = [];
@@ -194,13 +240,11 @@ include 'includes/header.php';
         </div>
         <div class="stat-content">
             <div class="stat-label">Total Returns</div>
-            <!-- Calculate total returns for period -->
-            <?php
-            $stmt = $db->prepare("SELECT COALESCE(SUM(r.total_amount), 0) as total FROM returns r JOIN users u ON r.user_id = u.id WHERE u.owner_id = ? AND DATE(r.created_at) BETWEEN ? AND ?");
-            $stmt->execute([$ownerId, $dateFrom, $dateTo]);
-            $returnTotal = $stmt->fetchColumn();
-            ?>
-            <div class="stat-value"><?php echo formatCurrency($returnTotal); ?></div>
+            <div class="stat-value"><?php echo formatCurrency($returnsPeriod['gross']); ?></div>
+            <div class="text-muted" style="font-size: .8rem;">
+                <?php echo $returnsPeriod['count']; ?> return<?php echo $returnsPeriod['count'] === 1 ? '' : 's'; ?>
+                &middot; <?php echo $returnsPeriod['exchange_count']; ?> exchange<?php echo $returnsPeriod['exchange_count'] === 1 ? '' : 's'; ?>
+            </div>
         </div>
     </div>
     
@@ -210,15 +254,44 @@ include 'includes/header.php';
         </div>
         <div class="stat-content">
             <div class="stat-label">Net Sales</div>
-            <div class="stat-value"><?php echo formatCurrency($summary['total_sales'] - $returnTotal); ?></div>
+            <!-- sales.total already lost the returned goods, so only the exchange
+                 difference is added or subtracted here. -->
+            <div class="stat-value"><?php echo formatCurrency($summary['total_sales'] + $returnsPeriod['net_effect']); ?></div>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-icon green">
+            <i class="fas fa-arrow-down"></i>
+        </div>
+        <div class="stat-content">
+            <div class="stat-label">Exchange Extra</div>
+            <div class="stat-value"><?php echo formatCurrency($returnsPeriod['extra']); ?></div>
+            <div class="text-muted" style="font-size: .8rem;">Taken in for the difference on an exchange</div>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-icon red">
+            <i class="fas fa-arrow-up"></i>
+        </div>
+        <div class="stat-content">
+            <div class="stat-label">Refund</div>
+            <div class="stat-value"><?php echo formatCurrency($returnsPeriod['refund']); ?></div>
+            <div class="text-muted" style="font-size: .8rem;">
+                Includes <?php echo formatCurrency($returnsPeriod['exchange_refund']); ?> paid on exchanges
+            </div>
         </div>
     </div>
 </div>
 
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
+<div class="cols-2" style="margin-top: 1.5rem;">
     <!-- Top Selling Products -->
     <?php
     // Top selling products (deducting returns)
+    //
+    // The joins that follow returns in are LEFT joins, so the counter account's
+    // own-bill filter rides on the WHERE here rather than on a join.
     $stmt = $db->prepare("
         SELECT 
             si.product_name, 
@@ -228,13 +301,13 @@ include 'includes/header.php';
         JOIN sales s ON si.sale_id = s.id
         LEFT JOIN returns r ON s.id = r.sale_id
         LEFT JOIN return_items ri ON r.id = ri.return_id AND si.product_id = ri.product_id
-        WHERE DATE(s.created_at) BETWEEN ? AND ?
+        WHERE DATE(s.created_at) BETWEEN ? AND ?{$ownScope}
         GROUP BY si.product_id, si.product_name
         HAVING total_qty > 0
         ORDER BY total_qty DESC
         LIMIT 10
     ");
-    $stmt->execute([$dateFrom, $dateTo]);
+    $stmt->execute(array_merge([$dateFrom, $dateTo], $ownParams));
     $topProducts = $stmt->fetchAll();
     ?>
     <div class="card">
@@ -313,7 +386,7 @@ include 'includes/header.php';
     </div>
 </div>
 
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
+<div class="cols-2" style="margin-top: 1.5rem;">
     <!-- Sales by Category -->
     <?php
     // Sales by category (deducting returns)
@@ -328,12 +401,12 @@ include 'includes/header.php';
         LEFT JOIN categories c ON p.category_id = c.id
         LEFT JOIN returns r ON s.id = r.sale_id
         LEFT JOIN return_items ri ON r.id = ri.return_id AND si.product_id = ri.product_id
-        WHERE DATE(s.created_at) BETWEEN ? AND ?
+        WHERE DATE(s.created_at) BETWEEN ? AND ?{$ownScope}
         GROUP BY p.category_id, c.name
         HAVING total_revenue > 0
         ORDER BY total_revenue DESC
     ");
-    $stmt->execute([$dateFrom, $dateTo]);
+    $stmt->execute(array_merge([$dateFrom, $dateTo], $ownParams));
     $categoryStats = $stmt->fetchAll();
     ?>
     <div class="card">

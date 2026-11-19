@@ -22,6 +22,8 @@ if (empty($barcode)) {
 }
 
 $db = getDB();
+$currentUser = getCurrentUser();
+$ownerId = $currentUser['owner_id'];
 
 try {
     // Find product by barcode (case insensitive)
@@ -40,15 +42,32 @@ try {
     }
 
     // Find the most recent sale containing this product (cross-store lookup)
+    //
+    // The newest bill is read inside the caller's own shop - a counter account
+    // (staff/cashier) sees only the bills it rang up itself - because an
+    // unscoped search took the newest bill of ANY tenant that sold the same
+    // product. Only the platform Super Admin, who bills across shops at the
+    // till, looks wider.
+    list($ownScope, $ownParams) = ownSalesScopeSql($currentUser);
+    $scopeSql = " AND " . saleOwnerScopeSql($ownerId);
+    $scopeParams = [$ownerId, $ownerId];
+    if (isSuperAdminUser($currentUser)) {
+        $scopeSql = '';
+        $scopeParams = [];
+    }
+    $scopeSql .= $ownScope;
+    $scopeParams = array_merge($scopeParams, $ownParams);
+
     $stmt = $db->prepare("
         SELECT s.id, s.invoice_number, s.total, s.created_at
         FROM sales s
         JOIN sale_items si ON si.sale_id = s.id
-        WHERE si.product_id = ?
+        JOIN users u ON s.user_id = u.id
+        WHERE si.product_id = ?" . $scopeSql . "
         ORDER BY s.created_at DESC
         LIMIT 1
     ");
-    $stmt->execute([$product['id']]);
+    $stmt->execute(array_merge([$product['id']], $scopeParams));
     $sale = $stmt->fetch();
 
     if (!$sale) {

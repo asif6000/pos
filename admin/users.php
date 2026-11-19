@@ -1,19 +1,26 @@
 <?php
 /**
  * POS System - User Management
- * Admin only - manage system users
+ * Needs the "users" permission - admin and owner always have it.
  */
 
 require_once '../config/db.php';
+require_once '../config/kpi-permissions.php';
 startSecureSession();
 
-if (!isLoggedIn() || !hasRole('admin')) {
-    redirect('../auth/login.php');
-}
+requirePermission('users');
 
 define('PAGE_TITLE', 'Users');
 
 $db = getDB();
+appSafeDdl($db, "CREATE TABLE IF NOT EXISTS user_kpi_permissions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    kpi_key VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_user_kpi (user_id, kpi_key),
+    INDEX idx_user_id (user_id)
+) ENGINE=InnoDB");
 $currentUser = getCurrentUser();
 
 // Handle form submissions
@@ -76,6 +83,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 setFlash('danger', 'Database error. Please try again.');
             }
         }
+    // ── Save one account's dashboard KPI cards ───────────────────────────────
+    // Per account, not per role: two people on the same Staff role can be
+    // trusted with different figures. Only staff/cashier accounts are limited
+    // (see kpiGatedRoles()), so an admin/owner/manager row is refused here
+    // instead of silently storing a list that would never be read.
+    } elseif ($action === 'save_kpi') {
+        $targetId = (int)($_POST['user_id'] ?? 0);
+        $keys     = is_array($_POST['kpi'] ?? null) ? $_POST['kpi'] : [];
+        $scopeOwnerId = !empty($currentUser['owner_id']) ? (int)$currentUser['owner_id'] : (int)$currentUser['id'];
+
+        $stmt = $db->prepare("SELECT id, name, role, owner_id FROM users WHERE id = ?");
+        $stmt->execute([$targetId]);
+        $target = $stmt->fetch();
+
+        if (!$target || (int)$target['owner_id'] !== $scopeOwnerId) {
+            setFlash('danger', 'That account is not part of this shop.');
+        } elseif (!in_array((string)$target['role'], kpiGatedRoles(), true)) {
+            setFlash('warning', 'Dashboard KPI access applies to staff and cashier accounts. This account already has its role’s full dashboard.');
+        } else {
+            try {
+                $valid = array_keys(dashboardKpiDefs());
+                $db->beginTransaction();
+                $db->prepare("DELETE FROM user_kpi_permissions WHERE user_id = ?")->execute([$targetId]);
+                $ins = $db->prepare("INSERT IGNORE INTO user_kpi_permissions (user_id, kpi_key) VALUES (?, ?)");
+                foreach ($keys as $k) {
+                    if (in_array($k, $valid, true)) {
+                        $ins->execute([$targetId, $k]);
+                    }
+                }
+                $db->commit();
+                clearPermissionCache();
+                setFlash('success', 'Dashboard cards for ' . $target['name'] . ' saved. The change is live on their next page load.');
+            } catch (PDOException $e) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
+                setFlash('danger', 'Error saving dashboard access. Has config/migration_kpi_permissions.sql been imported?');
+            }
+        }
+
     } elseif ($action === 'delete') {
         $id = (int) ($_POST['id'] ?? 0);
         $currentUser = getCurrentUser();
@@ -95,6 +142,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     $stmt = $db->prepare("DELETE FROM users WHERE id = ?");
                     $stmt->execute([$id]);
+                    // The KPI grants belong to the account, so they go with it.
+                    // A missing table is not an error here - nothing to clean.
+                    try {
+                        $db->prepare("DELETE FROM user_kpi_permissions WHERE user_id = ?")->execute([$id]);
+                    } catch (PDOException $ignored) {
+                    }
                     setFlash('success', 'User deleted successfully!');
                 }
             } catch (PDOException $e) {
@@ -123,6 +176,20 @@ $users = $db->query($sql)->fetchAll();
 $roles = $db->query("SELECT * FROM roles WHERE status = 'active' ORDER BY name ASC")->fetchAll();
 $stores = $db->query("SELECT * FROM stores WHERE status = 'active' AND owner_id = " . $ownerId . " ORDER BY name ASC")->fetchAll();
 
+// Dashboard KPI grants per account, for the modal to tick. Read through the
+// shop's own users so another shop's rows are never even loaded.
+$kpiByUser = [];
+try {
+    $stmt = $db->prepare("SELECT p.user_id, p.kpi_key FROM user_kpi_permissions p
+        JOIN users u ON p.user_id = u.id WHERE u.owner_id = ?");
+    $stmt->execute([$ownerId]);
+    foreach ($stmt->fetchAll() as $row) {
+        $kpiByUser[(int)$row['user_id']][] = $row['kpi_key'];
+    }
+} catch (Exception $e) {
+    // Table not imported yet: every account simply has no grants.
+}
+
 include 'includes/header.php';
 ?>
 
@@ -136,7 +203,7 @@ include 'includes/header.php';
     </div>
 <?php endif; ?>
 
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+<div class="page-toolbar">
     <p class="text-muted">Manage system users and their access</p>
     <div>
         <a href="roles.php" class="btn btn-outline" style="margin-right: 0.5rem;">
@@ -207,6 +274,15 @@ include 'includes/header.php';
                                     onclick='editUser(<?php echo json_encode($user); ?>)'>
                                     <i class="fas fa-edit"></i>
                                 </button>
+                                <?php if (in_array((string)$user['role'], kpiGatedRoles(), true)): ?>
+                                    <?php $kpiCount = count($kpiByUser[(int)$user['id']] ?? []); ?>
+                                    <button class="btn btn-sm btn-outline"
+                                        onclick='openKpiModal(<?php echo (int)$user['id']; ?>, <?php echo json_encode($user['name']); ?>)'
+                                        title="Dashboard KPI cards: <?php echo $kpiCount; ?> of <?php echo count(dashboardKpiDefs()); ?> enabled">
+                                        <i class="fas fa-chart-pie"></i> KPI
+                                        <?php if ($kpiCount > 0): ?><span class="badge badge-primary"><?php echo $kpiCount; ?></span><?php endif; ?>
+                                    </button>
+                                <?php endif; ?>
                                 <?php if ($user['id'] != getCurrentUser()['id']): ?>
                                     <button class="btn btn-sm btn-danger"
                                         onclick="deleteUser(<?php echo $user['id']; ?>, '<?php echo sanitize($user['name']); ?>')">
@@ -287,6 +363,54 @@ include 'includes/header.php';
     </div>
 </div>
 
+<!-- Dashboard KPI access (per account) -->
+<div class="modal-overlay" id="kpiModal">
+    <div class="modal" style="max-width: 620px;">
+        <div class="modal-header">
+            <h3 class="modal-title" id="kpiModalTitle">Dashboard KPI Cards</h3>
+            <button class="modal-close" onclick="closeKpiModal()">&times;</button>
+        </div>
+        <form method="POST">
+            <input type="hidden" name="action" value="save_kpi">
+            <input type="hidden" name="user_id" id="kpiUserId">
+            <div class="modal-body">
+                <p class="text-muted" style="margin-bottom: 1rem; font-size: 13px;">
+                    <i class="fas fa-info-circle"></i>
+                    Tick the cards this person may see on the dashboard. An unticked card is not
+                    built into the page at all &mdash; its figure is never sent. Everything starts
+                    unticked for a new account.
+                </p>
+
+                <div class="cols-2" style="gap: 0.4rem;">
+                    <?php foreach (dashboardKpiDefs() as $kpiKey => $kpiMeta): ?>
+                        <label class="perm-row" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.5rem; border-radius: 6px; cursor: pointer;" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background=''">
+                            <input type="checkbox" name="kpi[]" value="<?php echo $kpiKey; ?>"
+                                class="kpi-checkbox"
+                                data-key="<?php echo $kpiKey; ?>"
+                                style="width: 15px; height: 15px; cursor: pointer;">
+                            <i class="fas <?php echo $kpiMeta['icon']; ?>" style="color: #6b7280; width: 14px; font-size: 13px;"></i>
+                            <span style="font-size: 13px;"><?php echo htmlspecialchars($kpiMeta['label']); ?></span>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+
+                <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+                    <button type="button" class="btn btn-sm btn-outline" onclick="toggleAllKpi(true)">
+                        <i class="fas fa-check-square"></i> Select All
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline" onclick="toggleAllKpi(false)">
+                        <i class="fas fa-square"></i> Deselect All
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeKpiModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save KPI Access</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- Delete Form -->
 <form id="deleteForm" method="POST" style="display: none;">
     <input type="hidden" name="action" value="delete">
@@ -295,6 +419,27 @@ include 'includes/header.php';
 
 <script>
     const userModal = document.getElementById('userModal');
+
+    // Ticked KPI cards per account, keyed by user id.
+    const kpiByUser = <?php echo json_encode($kpiByUser); ?>;
+
+    function openKpiModal(userId, name) {
+        document.getElementById('kpiUserId').value = userId;
+        document.getElementById('kpiModalTitle').textContent = 'Dashboard KPI Cards: ' + name;
+        const granted = kpiByUser[userId] || [];
+        document.querySelectorAll('.kpi-checkbox').forEach(cb => {
+            cb.checked = granted.includes(cb.dataset.key);
+        });
+        document.getElementById('kpiModal').classList.add('active');
+    }
+
+    function closeKpiModal() {
+        document.getElementById('kpiModal').classList.remove('active');
+    }
+
+    function toggleAllKpi(state) {
+        document.querySelectorAll('.kpi-checkbox').forEach(cb => cb.checked = state);
+    }
 
     function openModal(action) {
         document.getElementById('formAction').value = action;
@@ -360,6 +505,9 @@ include 'includes/header.php';
     window.onclick = function (event) {
         if (event.target == userModal) {
             closeModal();
+        }
+        if (event.target == document.getElementById('kpiModal')) {
+            closeKpiModal();
         }
     }
 

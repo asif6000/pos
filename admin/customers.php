@@ -5,12 +5,11 @@
 
 require_once '../config/db.php';
 require_once '../config/google_contacts.php';
-// marketingNormalizePhone() and waAgentCheckCustomer() live behind these two.
-// They are required in their own right rather than left to be pulled in by
-// something else, which is how a screen ends up calling a function that is not
-// defined on it and dying with a fatal the shop only ever sees as a blank page.
+// marketingNormalizePhone() lives here. It is required in its own right rather
+// than left to be pulled in by something else, which is how a screen ends up
+// calling a function that is not defined on it and dying with a fatal the shop
+// only ever sees as a blank page.
 require_once '../config/marketing.php';
-require_once '../config/wa_agent.php';
 startSecureSession();
 
 if (!isLoggedIn()) {
@@ -111,32 +110,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $newId = $id;
                     }
                 }
-
-                // A changed number is a different number, so the old badge is
-                // cleared before the new one is asked about - otherwise a customer
-                // is shown as reachable on a number that has been replaced.
-                //
-                // Eight seconds, not twenty. This is inside a page load, and a
-                // shared host can end a long request before it answers - which
-                // would throw away the check and the message alike. The badge is
-                // left unchecked rather than guessed at, and Marketing -> Check
-                // numbers fills it in.
-                if ($phone !== '' && $newId > 0) {
-                    $db->prepare("UPDATE customers SET has_whatsapp = NULL, whatsapp_checked_at = NULL
-                                   WHERE id = ? AND owner_id = ?")
-                        ->execute([$newId, $currentUser['owner_id']]);
-                    try {
-                        $wa = waAgentCheckCustomer($db, $currentUser['owner_id'], $newId, 8);
-                        if ($wa['ok']) {
-                            setFlash($wa['exists'] ? 'success' : 'warning',
-                                $wa['exists'] ? 'WhatsApp number ta paoa gelo.' : 'Ei number e WhatsApp nai.');
-                        } elseif ($wa['reason'] !== 'agent mode off') {
-                            setFlash('warning', 'WhatsApp check hoye ni - Marketing page theke Check numbers chalan.');
-                        }
-                    } catch (Throwable $e) {
-                        error_log('customer whatsapp check: ' . $e->getMessage());
-                    }
-                }
             } catch (PDOException $e) {
                 setFlash('danger', 'Database error. Please try again.');
             }
@@ -157,12 +130,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($action === 'delete') {
         $id = (int) ($_POST['id'] ?? 0);
         try {
-            // Set customer_id to NULL in sales instead of deleting
-            $stmt = $db->prepare("UPDATE sales SET customer_id = NULL WHERE customer_id = ?");
-            $stmt->execute([$id]);
+            // Both statements carry the owner: the id arrives from the form, and an
+            // id from another shop must not clear that shop's invoices or remove its
+            // customer. sales.customer_id is ON DELETE SET NULL, so a legacy sale
+            // whose owner column is still NULL loses the link at the database, not
+            // silently keeps pointing at a deleted row.
+            $stmt = $db->prepare("UPDATE sales SET customer_id = NULL WHERE customer_id = ? AND owner_id = ?");
+            $stmt->execute([$id, $currentUser['owner_id']]);
 
-            $stmt = $db->prepare("DELETE FROM customers WHERE id = ?");
-            $stmt->execute([$id]);
+            $stmt = $db->prepare("DELETE FROM customers WHERE id = ? AND owner_id = ?");
+            $stmt->execute([$id, $currentUser['owner_id']]);
             setFlash('success', 'Customer deleted successfully!');
         } catch (PDOException $e) {
             setFlash('danger', 'Error deleting customer.');
@@ -184,6 +161,20 @@ $search = sanitize($_GET['search'] ?? '');
  *
  * The value is matched against a fixed set, never interpolated into the SQL.
  */
+// A counter account (staff/cashier) sees the customers of its own sales only -
+// the customer report follows the same own-bills rule as the sales report. The
+// per-row order and spend figures are narrowed the same way, so a card and the
+// rows underneath it tell the same story.
+list($ownScope, $ownParams) = ownSalesScopeSql($currentUser, 's');
+$ownCustomers = '';
+$ownCustomerParams = [];
+if (!empty($ownScope)) {
+    $ownUserId = (int) $currentUser['id'];
+    $ownCustomers = " AND EXISTS (SELECT 1 FROM sales s WHERE s.customer_id = c.id AND s.user_id = ?)";
+    $ownCustomerParams = [$ownUserId];
+}
+$ownOrdersScopeSub = !empty($ownScope) ? " AND user_id = " . $ownUserId : '';
+
 $sort = $_GET['sort'] ?? 'top';
 $sortSql = [
     'new'    => 'c.created_at DESC',
@@ -192,10 +183,10 @@ $sortSql = [
     'spent'  => 'total_spent DESC, c.name ASC',
 ][$sort] ?? 'total_spent DESC, total_orders DESC, c.name ASC';
 $sql = "SELECT c.*,
-        (SELECT COUNT(*) FROM sales WHERE customer_id = c.id) as total_orders,
-        (SELECT COALESCE(SUM(total), 0) FROM sales WHERE customer_id = c.id) as total_spent
-        FROM customers c WHERE c.owner_id = ?";
-$params = [$currentUser['owner_id']];
+        (SELECT COUNT(*) FROM sales WHERE customer_id = c.id$ownOrdersScopeSub) as total_orders,
+        (SELECT COALESCE(SUM(total), 0) FROM sales WHERE customer_id = c.id$ownOrdersScopeSub) as total_spent
+        FROM customers c WHERE c.owner_id = ?" . $ownCustomers;
+$params = array_merge([$currentUser['owner_id']], $ownCustomerParams);
 
 if ($search) {
     $sql .= " AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?)";
@@ -256,12 +247,15 @@ $stats = [
 $statsOk = false;
 
 try {
+    // A counter account's cards count its own customers and its own sales, so
+    // they cannot disagree with the narrowed list underneath them. The EXISTS
+    // filter mirrors the one the list uses.
     $s = $db->prepare("SELECT
             COUNT(*) AS total,
             SUM(TRIM(COALESCE(phone, '')) <> '') AS with_phone,
             SUM(created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')) AS new_month
-        FROM customers WHERE owner_id = ?");
-    $s->execute([$currentUser['owner_id']]);
+        FROM customers WHERE owner_id = ?" . $ownCustomers);
+    $s->execute(array_merge([$currentUser['owner_id']], $ownCustomerParams));
     $r = $s->fetch() ?: [];
     $stats['customers']  = (int)($r['total'] ?? 0);
     $stats['with_phone'] = (int)($r['with_phone'] ?? 0);
@@ -272,7 +266,7 @@ try {
     // card a different number from the one the shop already sees elsewhere.
     $s2 = $db->prepare("SELECT COUNT(*) AS orders, COALESCE(SUM(total), 0) AS revenue
                         FROM sales
-                        WHERE owner_id = ? AND customer_id IS NOT NULL");
+                        WHERE owner_id = ? AND customer_id IS NOT NULL" . $ownOrdersScopeSub);
     $s2->execute([$currentUser['owner_id']]);
     $r2 = $s2->fetch() ?: [];
     $stats['orders']  = (int)($r2['orders'] ?? 0);
@@ -295,13 +289,13 @@ try {
     // catch below turned that into a confident "0". Hence $statsOk, which makes
     // the card render a dash rather than a number that is simply untrue.
     $s3 = $db->prepare("SELECT COUNT(DISTINCT customer_id) AS buyers
-                        FROM sales WHERE owner_id = ? AND customer_id IS NOT NULL");
+                        FROM sales WHERE owner_id = ? AND customer_id IS NOT NULL" . $ownOrdersScopeSub);
     $s3->execute([$currentUser['owner_id']]);
     $stats['buyers'] = (int)$s3->fetchColumn();
 
     $s4 = $db->prepare("SELECT COUNT(*) FROM (
                             SELECT customer_id FROM sales
-                            WHERE owner_id = ? AND customer_id IS NOT NULL
+                            WHERE owner_id = ? AND customer_id IS NOT NULL" . $ownOrdersScopeSub . "
                             GROUP BY customer_id HAVING COUNT(*) > 1
                         ) AS more_than_one");
     $s4->execute([$currentUser['owner_id']]);

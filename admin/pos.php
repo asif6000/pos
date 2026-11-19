@@ -5,6 +5,7 @@
  */
 
 require_once '../config/db.php';
+require_once '../config/sale_split.php';
 startSecureSession();
 
 if (!isLoggedIn()) {
@@ -15,6 +16,7 @@ define('PAGE_TITLE', 'POS - Billing');
 
 $db = getDB();
 $user = getCurrentUser();
+$isSuper = saleIsSuperAdmin($user);
 
 // Get settings - Filter by owner
 $settings = [];
@@ -31,54 +33,301 @@ $stmt = $db->prepare("SELECT id, name FROM categories WHERE status = 'active' AN
 $stmt->execute([$user['owner_id']]);
 $categories = $stmt->fetchAll();
 
+/**
+ * One shop's VAT rate, read the only way the sale door reads it: that shop's own
+ * settings row, with no platform fallback. The screen and the door have to price a
+ * sale with the same number, or the door refuses the basket as a total mismatch.
+ */
+function posStoreVatPercent($db, $ownerId)
+{
+    static $cache = [];
+    $key = (int) $ownerId;
+    if (isset($cache[$key])) {
+        return $cache[$key];
+    }
+    $vat = 0.0;
+    try {
+        $stmt = $db->prepare("SELECT setting_value FROM settings WHERE owner_id = ? AND setting_key = 'vat_percent' LIMIT 1");
+        $stmt->execute([$ownerId]);
+        $row = $stmt->fetchColumn();
+        if ($row !== false && $row !== null && $row !== '') {
+            $vat = (float) $row;
+        }
+    } catch (Throwable $e) {
+        error_log('pos store vat read: ' . $e->getMessage());
+    }
+    $cache[$key] = $vat;
+    return $vat;
+}
+
 // Get products
-// Get products with store stock
-$store_id = $user['store_id'] ?? 0;
-if (!$store_id) {
-    $stmtFallback = $db->prepare("SELECT id FROM stores WHERE status = 'active' AND owner_id = ? LIMIT 1");
-    $stmtFallback->execute([$user['owner_id']]);
-    $store_id = $stmtFallback->fetchColumn();
-    if (!$store_id) {
-        $stmtFallback = $db->query("SELECT id FROM stores WHERE status = 'active' LIMIT 1");
-        $store_id = $stmtFallback->fetchColumn();
+// The stores this till may sell from, and the stock of each.
+//
+// A shop's own staff see their own stores. The platform Super Admin sees every
+// shop's, because selling from any store is what they are for - and each of those
+// products still belongs to the shop that owns the store it sits in, which is what
+// the line below asks the database for rather than what the person typing happens
+// to own. The sale, its money and its stock movements all land on that shop.
+$posStores = [];
+if ($isSuper) {
+    $stmt = $db->query("SELECT id, name, owner_id FROM stores WHERE status = 'active' ORDER BY name");
+} else {
+    $stmt = $db->prepare("SELECT id, name, owner_id FROM stores WHERE status = 'active' AND owner_id = ? ORDER BY name");
+    $stmt->execute([$user['owner_id']]);
+}
+$posStores = $stmt->fetchAll();
+
+// This till's own store stays in the list even when it has later been marked
+// inactive: it is the shelf the shop has always sold from, and dropping it here
+// would empty their grid. Nobody else's inactive store is offered.
+$sessionStoreId = (int) ($user['store_id'] ?? 0);
+if (!$isSuper && $sessionStoreId > 0) {
+    $listed = array_map('intval', array_column($posStores, 'id'));
+    if (!in_array($sessionStoreId, $listed, true)) {
+        $stmtOwn = $db->prepare("SELECT id, name, owner_id FROM stores WHERE id = ? AND (owner_id = ? OR owner_id IS NULL)");
+        $stmtOwn->execute([$sessionStoreId, $user['owner_id']]);
+        $ownStore = $stmtOwn->fetch();
+        if ($ownStore) {
+            $posStores[] = $ownStore;
+        }
     }
 }
-$sql = "SELECT p.id, p.name, p.barcode, p.sell_price, COALESCE(ss.quantity, 0) as stock, p.category_id 
-        FROM products p 
-        LEFT JOIN store_stocks ss ON p.id = ss.product_id AND ss.store_id = ? 
-        WHERE p.status = 'active' AND p.owner_id = ? AND COALESCE(ss.quantity, 0) > 0 
-        ORDER BY p.name";
-$stmt = $db->prepare($sql);
-$stmt->execute([$store_id, $user['owner_id']]);
-$products = $stmt->fetchAll();
+
+/**
+ * sales.store_id is read below, so the column has to be settled first - the same
+ * call the sale door makes, which only writes when the database lacks it.
+ */
+$storeReady = ensureSaleStoreColumns();
+
+/**
+ * A sale being corrected (?edit_sale_id=).
+ *
+ * Read the way admin/api/process-sale.php reads it, because the two have to agree
+ * about which store the shelf and the stock belong to: an old row that carries no
+ * store_id is the store the cashier who made it stood in, which is where the
+ * reports file it too. Getting that wrong here would restore the sale's stock into
+ * whichever store the person editing happens to be standing in today.
+ *
+ * A sale that is not this account's is dropped back to a new sale rather than
+ * half-shown - the door refuses the post anyway, and a pre-filled cart the cashier
+ * cannot save is a worse answer than an empty one.
+ */
+$editSaleId = (int) ($_GET['edit_sale_id'] ?? 0);
+$editSale = null;
+$editItems = [];
+$editStoreId = 0;
+if ($editSaleId > 0) {
+    $editSql = "SELECT s.id, s.user_id, s.customer_id, s.invoice_number, s.created_at,
+                       s.subtotal, s.discount_percent, s.discount_amount,
+                       s.vat_percent, s.vat_amount, s.total, s.paid_amount,
+                       s.payment_method, s.payment_status, s.owner_id"
+         . ($storeReady ? ", s.store_id" : "") . "
+                FROM sales s WHERE s.id = ?";
+    $stmtEdit = $db->prepare($editSql);
+    $stmtEdit->execute([$editSaleId]);
+    $editSale = $stmtEdit->fetch() ?: null;
+
+    if ($editSale) {
+        $editOwner = (int) ($editSale['owner_id'] ?? 0);
+        $editStoreId = (int) ($editSale['store_id'] ?? 0);
+        if ($editOwner <= 0 || $editStoreId <= 0) {
+            $stmtMaker = $db->prepare("SELECT owner_id, store_id FROM users WHERE id = ?");
+            $stmtMaker->execute([(int) $editSale['user_id']]);
+            $maker = $stmtMaker->fetch();
+            if ($editOwner <= 0) {
+                $editOwner = (int) ($maker['owner_id'] ?? 0);
+            }
+            if ($editStoreId <= 0) {
+                $editStoreId = (int) ($maker['store_id'] ?? 0);
+            }
+        }
+
+        $mayEdit = $isSuper || $editOwner === (int) $user['owner_id'];
+        if (!$mayEdit) {
+            $editSale = null;
+            $editSaleId = 0;
+            $editStoreId = 0;
+        } else {
+            $stmtItems = $db->prepare("SELECT product_id, product_name, quantity, unit_price, total_price
+                                       FROM sale_items WHERE sale_id = ? ORDER BY id");
+            $stmtItems->execute([$editSaleId]);
+            $editItems = $stmtItems->fetchAll();
+
+            // The shelf the sale came out of has to be on the till, or the lines
+            // being corrected have no products to correct against. A shop only ever
+            // gets its own store back; the Super Admin gets the store the row names.
+            if ($editStoreId > 0 && !in_array($editStoreId, array_map('intval', array_column($posStores, 'id')), true)) {
+                $stmtE = $db->prepare($isSuper
+                    ? "SELECT id, name, owner_id FROM stores WHERE id = ?"
+                    : "SELECT id, name, owner_id FROM stores WHERE id = ? AND (owner_id = ? OR owner_id IS NULL)");
+                $stmtE->execute($isSuper ? [$editStoreId] : [$editStoreId, $user['owner_id']]);
+                $editStoreRow = $stmtE->fetch();
+                if ($editStoreRow) {
+                    $posStores[] = $editStoreRow;
+                }
+            }
+        }
+    }
+}
+
+// Whose shop a sale out of each of these stores is filed under, and at what rate:
+// the two decisions config/sale_split.php and the sale door make, worked out here
+// only so the number on the screen is the number the door books. A store that
+// belongs to nobody is the shop that owns the till, which for the platform Super
+// Admin is nobody at all - the door then refuses the line, and the grid below never
+// lists a store it would refuse.
+foreach ($posStores as $si => $posStore) {
+    $saleOwner = (int) $posStore['owner_id'] > 0 ? (int) $posStore['owner_id'] : (int) $user['owner_id'];
+    $posStores[$si]['sale_owner_id'] = $saleOwner;
+    $posStores[$si]['vat_percent']   = $saleOwner === (int) $user['owner_id']
+        ? $vatPercent
+        : posStoreVatPercent($db, $saleOwner);
+}
+
+$multiStore = $isSuper || count($posStores) > 1;
+
+// A Super Admin filtering by shop sees store names chosen by eight different
+// shopkeepers, so the shop each belongs to goes on the chip. Their own staff do not
+// need it - every store on their till is already theirs.
+if ($multiStore && !empty($posStores)) {
+    $ownerIds = array_values(array_unique(array_column($posStores, 'sale_owner_id')));
+    $shopNames = [];
+    if (!empty($ownerIds)) {
+        $in = implode(',', array_map('intval', $ownerIds));
+        $stmtShops = $db->query("SELECT owner_id, setting_value FROM settings
+                                 WHERE setting_key = 'shop_name' AND owner_id IN ($in)");
+        foreach ($stmtShops->fetchAll() as $shopRow) {
+            $shopNames[(int) $shopRow['owner_id']] = $shopRow['setting_value'];
+        }
+    }
+    foreach ($posStores as $si => $posStore) {
+        $posStores[$si]['shop_name'] = $shopNames[(int) $posStore['sale_owner_id']] ?? '';
+    }
+}
+
+// How a store is written on a card and on a cart line: its own name, and for the
+// platform Super Admin the shop it belongs to as well, because "Main Shop" means
+// nothing when it is one of eight shops' "Main Shop".
+$storeLabels = [];
+foreach ($posStores as $posStore) {
+    $label = $posStore['name'];
+    if ($isSuper && !empty($posStore['shop_name'])) {
+        $label .= ' · ' . $posStore['shop_name'];
+    }
+    $storeLabels[(int) $posStore['id']] = $label;
+}
+$storesById = [];
+foreach ($posStores as $posStore) {
+    $storesById[(int) $posStore['id']] = $posStore;
+}
+
+// The same list the chips use, for the browser: each store's label and the VAT rate
+// its own shop charges. The till prices a basket with these, and the door re-prices
+// it from the settings of the same shops - which is why both numbers are read the
+// same way rather than one being typed in.
+$storesForJs = [];
+foreach ($posStores as $posStore) {
+    $storesForJs[] = [
+        'id'          => (int) $posStore['id'],
+        'name'        => $posStore['name'],
+        'label'       => $storeLabels[(int) $posStore['id']],
+        'vat_percent' => (float) $posStore['vat_percent'],
+    ];
+}
+
+// The store a line falls back to when it names none: this till's own, or - for a
+// shop with several - the first of them. A Super Admin with more than one store has
+// no store of their own to fall back to, so every line they add names one.
+$store_id = in_array($sessionStoreId, array_map('intval', array_column($posStores, 'id')), true)
+    ? $sessionStoreId
+    : 0;
+if ($store_id <= 0 && !empty($posStores)) {
+    $store_id = (int) $posStores[0]['id'];
+    if ($isSuper && $multiStore) {
+        $store_id = 0;
+    }
+}
+$defaultStore = null;
+foreach ($posStores as $posStore) {
+    if ((int) $posStore['id'] === (int) $store_id) {
+        $defaultStore = $posStore;
+        break;
+    }
+}
+
+// A sale being corrected opens on the shelf it was rung up from, whatever the
+// person editing is standing in today - and that store is in the list above
+// precisely so its products are here to be corrected.
+if ($editSaleId > 0 && $editStoreId > 0) {
+    foreach ($posStores as $posStore) {
+        if ((int) $posStore['id'] === $editStoreId) {
+            $store_id = $editStoreId;
+            $defaultStore = $posStore;
+            break;
+        }
+    }
+}
+
+if ($multiStore) {
+    // One row per (product, store) pair that has stock, so a basket can hold the same
+    // product from two shelves and each line says which one it came from.
+    $sql = "SELECT p.id, p.name, p.barcode, p.sell_price, p.image, p.category_id,
+                   s.id AS store_id, s.name AS store_name, ss.quantity AS stock
+            FROM products p
+            JOIN store_stocks ss ON ss.product_id = p.id AND ss.quantity > 0
+            JOIN stores s ON s.id = ss.store_id
+            WHERE p.status = 'active'
+              AND s.id IN (" . implode(',', array_map('intval', array_column($posStores, 'id'))) . ")
+              AND (p.owner_id = s.owner_id OR p.owner_id IS NULL) ";
+    $args = [];
+    if (!$isSuper) {
+        $sql .= " AND p.owner_id = ?";
+        $args[] = $user['owner_id'];
+    }
+    $sql .= " ORDER BY p.name, s.name";
+    $stmt = $db->prepare($sql);
+    $stmt->execute($args);
+    $products = $stmt->fetchAll();
+} else {
+    $sql = "SELECT p.id, p.name, p.barcode, p.sell_price, p.image, COALESCE(ss.quantity, 0) as stock, p.category_id 
+            FROM products p 
+            LEFT JOIN store_stocks ss ON p.id = ss.product_id AND ss.store_id = ? 
+            WHERE p.status = 'active' AND p.owner_id = ? AND COALESCE(ss.quantity, 0) > 0 
+            ORDER BY p.name";
+    $stmt = $db->prepare($sql);
+    $stmt->execute([$store_id, $user['owner_id']]);
+    $products = $stmt->fetchAll();
+    foreach ($products as $pi => $product) {
+        $products[$pi]['store_id']   = (int) $store_id;
+        $products[$pi]['store_name'] = $defaultStore['name'] ?? '';
+    }
+}
+
+// One label per row, from the same list the chips use, so a card and the line it
+// adds to the cart always say the same thing about where the goods sit.
+foreach ($products as $pi => $product) {
+    $rowStore = (int) $product['store_id'];
+    $products[$pi]['store_id']    = $rowStore;
+    $products[$pi]['store_label'] = $storeLabels[$rowStore] ?? ($product['store_name'] ?? '');
+}
+
+// What the till prefills when a sale is being corrected. The store it belongs to
+// travels with it, because the door reads that one line back and the cart has to
+// show the shelf the goods came off - not whichever one this person is on today.
+$editSaleData = null;
+if ($editSaleId > 0 && $editSale) {
+    $editSaleData = [
+        'sale'       => $editSale,
+        'items'      => $editItems,
+        'store_id'   => $editStoreId,
+        'store_name' => $storeLabels[$editStoreId] ?? ($editSale['store_name'] ?? ''),
+    ];
+}
 
 // Get customers - Filter by owner
 $stmt = $db->prepare("SELECT id, name, phone FROM customers WHERE owner_id = ? ORDER BY id ASC");
 $stmt->execute([$user['owner_id']]);
 $customers = $stmt->fetchAll();
-
-// Check for Edit Mode
-$editSaleId = isset($_GET['edit_sale_id']) ? (int) $_GET['edit_sale_id'] : 0;
-$editSaleData = null;
-
-if ($editSaleId) {
-    // Secure edit lookup by owner_id
-    $stmt = $db->prepare("SELECT s.* FROM sales s JOIN users u ON s.user_id = u.id WHERE s.id = ? AND u.owner_id = ?");
-    $stmt->execute([$editSaleId, $user['owner_id']]);
-    $editSale = $stmt->fetch();
-
-    if ($editSale) {
-        // Get items
-        $stmtItems = $db->prepare("SELECT * FROM sale_items WHERE sale_id = ?");
-        $stmtItems->execute([$editSaleId]);
-        $editItems = $stmtItems->fetchAll();
-
-        $editSaleData = [
-            'sale' => $editSale,
-            'items' => $editItems
-        ];
-    }
-}
 
 include 'includes/header.php';
 ?>
@@ -314,6 +563,129 @@ include 'includes/header.php';
         border-color: var(--pos-primary);
         color: white;
         box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.3);
+    }
+
+    /* Which shop's shelf a product sits on. The same chip as a category, in its own
+       colour, so the two filters do not read as one choice. */
+    .pos-store-btn {
+        background: #fffbeb;
+        border-color: #fde68a;
+        color: #92400e;
+    }
+
+    .pos-store-btn:hover {
+        background: #fef3c7;
+        color: #7c2d12;
+    }
+
+    .pos-store-btn.active {
+        background: #b45309;
+        border-color: #b45309;
+        color: #fff;
+        box-shadow: 0 4px 6px -1px rgba(180, 83, 9, 0.3);
+    }
+
+    .pos-store-hint {
+        font-size: 0.75rem;
+        color: var(--pos-text-muted);
+        margin: -0.25rem 0 0.5rem;
+    }
+
+    .pos-product-store {
+        align-self: flex-start;
+        background: #f1f5f9;
+        color: var(--pos-text-muted);
+        border-radius: 99px;
+        padding: 0.1rem 0.45rem;
+        font-size: 0.65rem;
+        margin-top: 0.15rem;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .pos-cart-item-store {
+        font-size: 0.65rem;
+        color: #b45309;
+        font-weight: 600;
+    }
+
+    /* One till, several shops' goods: the tender is said per shop, because the cash
+       physically goes into different tills and each shop's bill is its own sale. */
+    .pos-store-payments {
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+        margin-bottom: 0.4rem;
+        max-height: 150px;
+        overflow-y: auto;
+    }
+
+    .pos-store-payment-row {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.78rem;
+    }
+
+    .pos-store-payment-row .pos-store-payment-name {
+        flex: 1;
+        color: #92400e;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .pos-store-payment-row input {
+        width: 92px;
+        text-align: right;
+        font-size: 0.8rem;
+        padding: 0.2rem 0.4rem;
+        height: 28px;
+    }
+
+    .pos-store-payment-row .pos-store-payment-total {
+        width: 78px;
+        text-align: right;
+        color: var(--pos-text-muted);
+    }
+
+    /* Two bills from one basket: each stacked under the other, each sendable on its
+       own, because the customer's receipt belongs to the shop whose goods it lists. */
+    .invoice-bill + .invoice-bill {
+        border-top: 2px dashed #94a3b8;
+        margin-top: 1rem;
+        padding-top: 0.75rem;
+    }
+
+    .invoice-bill-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        font-size: 0.75rem;
+        color: #92400e;
+        background: #fffbeb;
+        border-radius: 6px;
+        padding: 0.3rem 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .invoice-bill-bar button {
+        border: 1px solid #fde68a;
+        background: #fff;
+        color: #92400e;
+        border-radius: 99px;
+        padding: 0.15rem 0.5rem;
+        font-size: 0.68rem;
+        cursor: pointer;
+    }
+
+    .invoice-bill-bar button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
     }
 
     /* Cart Section styling */
@@ -837,15 +1209,35 @@ include 'includes/header.php';
             <?php endforeach; ?>
         </div>
 
+        <?php if ($multiStore): ?>
+        <!-- Which shop's shelf. Picking one is how a barcode that exists in two
+             stores is told apart; "All stores" is the list every shop's stock. -->
+        <div class="pos-categories">
+            <button class="pos-category-btn pos-store-btn active" data-store="all">All stores</button>
+            <?php foreach ($posStores as $posStore): ?>
+                <button class="pos-category-btn pos-store-btn" data-store="<?php echo (int) $posStore['id']; ?>"
+                        title="<?php echo sanitize($posStore['shop_name'] ?: $posStore['name']); ?>">
+                    <?php echo sanitize($posStore['name']); ?><?php echo $isSuper && !empty($posStore['shop_name']) ? ' · ' . sanitize($posStore['shop_name']) : ''; ?>
+                </button>
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
+
         <!-- Products Grid -->
         <div class="pos-product-grid" id="productGrid">
             <?php foreach ($products as $product): ?>
                 <div class="pos-product-card" data-id="<?php echo $product['id']; ?>"
                     data-name="<?php echo sanitize($product['name']); ?>" data-price="<?php echo $product['sell_price']; ?>"
                     data-stock="<?php echo $product['stock']; ?>" data-barcode="<?php echo $product['barcode']; ?>"
-                    data-category="<?php echo $product['category_id']; ?>">
+                    data-category="<?php echo $product['category_id']; ?>"
+                    data-store="<?php echo (int) $product['store_id']; ?>">
                     <div class="pos-product-img">
-                        <?php echo strtoupper(substr(sanitize($product['name']), 0, 1)); ?>
+                        <?php if (!empty($product['image'])): ?>
+                            <img src="<?php echo htmlspecialchars(assetUrl($product['image']), ENT_QUOTES, 'UTF-8'); ?>" alt=""
+                                style="width:100%; height:100%; object-fit:cover; border-radius:50%;">
+                        <?php else: ?>
+                            <?php echo strtoupper(substr(sanitize($product['name']), 0, 1)); ?>
+                        <?php endif; ?>
                     </div>
                     
                     <div class="pos-product-name">
@@ -855,6 +1247,12 @@ include 'includes/header.php';
                     <div class="pos-product-price">
                         <?php echo formatCurrency($product['sell_price']); ?>
                     </div>
+
+                    <?php if ($multiStore): ?>
+                        <div class="pos-product-store" title="Ei store-r stock theke bikri hobea">
+                            <?php echo sanitize($storeLabels[(int) $product['store_id']] ?? $product['store_name']); ?>
+                        </div>
+                    <?php endif; ?>
                     
                     <div class="pos-product-stock <?php echo $product['stock'] <= 10 ? 'low' : ''; ?>">
                         Stock: <?php echo $product['stock']; ?>
@@ -966,15 +1364,21 @@ include 'includes/header.php';
                 <button class="pos-payment-btn" data-method="bank">
                     <i class="fas fa-university"></i> Bank
                 </button>
+                <button class="pos-payment-btn" data-method="lottery">
+                    <i class="fas fa-ticket"></i> Lottery Sale
+                </button>
             </div>
 
-            <!-- Paid Amount -->
-            <div style="display: flex; gap: 0.4rem; margin-bottom: 0.4rem;">
+            <!-- Paid Amount. One input for one shop's bill; when a basket spans two
+                 shops each shop's tender is typed beside its own total, because the
+                 change is counted per bill and the cash lands in two tills. -->
+            <div id="singlePaymentRow" style="display: flex; gap: 0.4rem; margin-bottom: 0.4rem;">
                 <input type="number" id="paidAmount" class="form-control" placeholder="Paid Amount"
                     style="flex: 1; font-size: 0.85rem; padding: 0.25rem 0.5rem; height: 30px;">
                 <button class="btn btn-light" onclick="setExactAmount()"
                     style="background: #e2e8f0; border: none; padding: 0 0.5rem; font-weight: 600; font-size: 0.75rem; height: 30px;">Exact</button>
             </div>
+            <div class="pos-store-payments" id="storePaymentRows" style="display: none; margin-bottom: 0.4rem;"></div>
             <div class="pos-cart-row" id="changeRow" style="display: none; margin-bottom: 0.75rem;">
                 <span><strong>Change</strong></span>
                 <span id="changeAmount" class="text-success"><strong>
@@ -1003,10 +1407,6 @@ include 'includes/header.php';
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeInvoiceModal()">Close</button>
-            <button class="btn btn-whatsapp" id="invoiceWaBtn" onclick="sendInvoiceWhatsApp()"
-                    style="background:#25D366;color:#fff;border:none;">
-                <i class="fab fa-whatsapp"></i> WhatsApp
-            </button>
             <button class="btn btn-sms" id="invoiceSmsBtn" onclick="sendInvoiceSms()"
                     style="background:#4b5563;color:#fff;border:none;">
                 <i class="fas fa-comment-sms"></i> SMS
@@ -1036,30 +1436,99 @@ include 'includes/header.php';
 </div>
 
 <script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/qrcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
 <script src="<?php echo htmlspecialchars(assetUrl('assets/js/html5-qrcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
 <script>
     // Global variables
     let cart = [];
     let paymentMethod = 'cash';
-    const vatPercent = <?php echo $vatPercent; ?>;
+    let currentBasket = null;
     const currency = '<?php echo CURRENCY; ?>';
+    // This shop's own rate. A one-shop basket is priced with it, exactly as before;
+    // a basket that spans shops is priced per shop, from storesData below.
+    const vatPercent = <?php echo $vatPercent; ?>;
+    const multiStore = <?php echo $multiStore ? 'true' : 'false'; ?>;
+    const storesData = <?php echo json_encode($storesForJs); ?>;
     const cartStorageKey = 'pos_cart_<?php echo $user['id']; ?>_<?php echo $store_id; ?>';
     const editSaleId = <?php echo $editSaleId ?: 0; ?>;
     const editSaleData = <?php echo $editSaleData ? json_encode($editSaleData) : 'null'; ?>;
     const customersData = <?php echo json_encode($customers); ?>;
+    const productsData = <?php echo json_encode($products); ?>;
+
+    const storesById = {};
+    storesData.forEach(s => { storesById[parseInt(s.id)] = s; });
+
+    // A product stocked in two shops is two rows here, so a cart line is only
+    // itself once its shelf is named with it. Everything that finds a line by id
+    // alone would merge two shops' stock of the same shirt into one line - and the
+    // server books each shelf separately.
+    function cartKey(storeId, productId) {
+        return parseInt(storeId) + ':' + parseInt(productId);
+    }
+
+    function storeLabel(storeId) {
+        const s = storesById[parseInt(storeId)];
+        return s ? s.label : '';
+    }
+
+    function storeVatPercent(storeId) {
+        const s = storesById[parseInt(storeId)];
+        return s ? parseFloat(s.vat_percent) : vatPercent;
+    }
+
+    /**
+     * One product row into one cart line, shelf included.
+     *
+     * The shape is written in one place because a line that forgets its store is a
+     * line the server cannot book: two shops' stock of the same product would merge
+     * into one row and the deduction would land on whichever of them got asked
+     * first.
+     */
+    function productToCartLine(p) {
+        const storeId = parseInt(p.store_id) || 0;
+        return {
+            key: cartKey(storeId, p.id),
+            id: parseInt(p.id),
+            store: storeId,
+            storeName: storeLabel(storeId),
+            name: p.name,
+            price: parseFloat(p.sell_price),
+            stock: parseInt(p.stock)
+        };
+    }
+
+    /**
+     * One token per basket, so a double tap cannot write the sale twice.
+     *
+     * The server keeps the first one it sees and replays that receipt for any post
+     * carrying the same token, which is why a fresh one is taken as soon as a sale
+     * is saved - reusing the old token would silently return the finished receipt
+     * instead of ringing up the next customer.
+     */
+    function newSaleToken() {
+        return 'pos-<?php echo (int) $user['id']; ?>-' + Date.now().toString(36)
+            + '-' + Math.random().toString(36).slice(2, 10);
+    }
+    let saleToken = newSaleToken();
 
     // Initialize cart if editing
     if (editSaleData) {
+        const editStore = parseInt(editSaleData.store_id) || 0;
         const productsMap = {};
-        <?php foreach ($products as $p) {
-            echo "productsMap[{$p['id']}] = " . json_encode($p) . ";\n";
-        } ?>
+        productsData.forEach(p => {
+            if (!editStore || parseInt(p.store_id) === editStore) {
+                productsMap[cartKey(p.store_id, p.id)] = p;
+            }
+        });
 
         editSaleData.items.forEach(item => {
-            const product = productsMap[item.product_id];
+            const product = productsMap[cartKey(editStore, item.product_id)];
             if (product) {
                 cart.push({
+                    key: cartKey(editStore, item.product_id),
                     id: parseInt(item.product_id),
+                    store: editStore,
+                    storeName: editSaleData.store_name || storeLabel(editStore),
                     name: item.product_name,
                     price: parseFloat(item.unit_price),
                     stock: parseInt(product.stock) + parseInt(item.quantity),
@@ -1089,24 +1558,17 @@ include 'includes/header.php';
             }
         });
 
-        // Defer main update to after functions are defined (moved to window load or executed after)
-        // But since this runs inline, we need functions defined.
-        // We will call updateCartDisplay() at the end of script or ensure functions are hoisted.
-        // JS functions (function foo() {}) are hoisted, so it is fine.
+        // The chips open on the shelf the sale was rung up from, so the grid the
+        // cashier sees is the grid the lines came out of.
+        if (multiStore && editStore) {
+            selectStoreChip(editStore);
+        }
     }
 
     // USB Barcode Scanner Support
     let barcodeBuffer = '';
     let lastKeyTime = 0;
     const BARCODE_TIMEOUT = 150; // Increased timeout for better reliability (ms)
-
-    const productsData = <?php echo json_encode($products); ?>;
-    
-    // Ensure products data is valid
-    if (!Array.isArray(productsData)) {
-        console.error('Products data is not an array');
-        productsData = [];
-    }
 
     // Customer Search
     const customerSearchInput = document.getElementById('customerSearch');
@@ -1232,17 +1694,19 @@ include 'includes/header.php';
             console.log('Sample product barcodes:', productsData.slice(0, 3).map(p => ({id: p.id, name: p.name, barcode: p.barcode})));
         }
 
-        // Find product by barcode (case insensitive with trimming)
-        const product = productsData.find(p => {
-            if (!p.barcode) return false;
-            const productBarcode = p.barcode.toString().toLowerCase().trim();
-            const scannedBarcode = barcode.toLowerCase().trim();
-            const match = productBarcode === scannedBarcode;
-            if (match) {
-                console.log('Barcode match found:', {productId: p.id, productName: p.name, productBarcode, scannedBarcode});
-            }
-            return match;
-        });
+        // Find product by barcode (case insensitive with trimming).
+        //
+        // The same barcode can sit on two shops' shelves, and the two are two
+        // different sales with two different stock counts. A store picked above
+        // decides it; an undecided scan that matches more than one shelf is refused
+        // and says why, rather than quietly selling off a shelf nobody chose.
+        const scannedBarcode = barcode.toLowerCase().trim();
+        const matches = productsData.filter(p => p.barcode
+            && String(p.barcode).toLowerCase().trim() === scannedBarcode);
+        const chosenStore = activeStoreId();
+        const product = matches.length === 1
+            ? matches[0]
+            : (matches.find(p => chosenStore && parseInt(p.store_id) === chosenStore) || null);
 
         if (product) {
             // Validate product data
@@ -1255,21 +1719,13 @@ include 'includes/header.php';
             
             console.log('Adding product to cart:', product.name);
             
-            // Add to cart with exactly 1 quantity
-            const newCartItem = {
-                id: parseInt(product.id),
-                name: product.name,
-                price: parseFloat(product.sell_price),
-                stock: parseInt(product.stock),
-                quantity: 1
-            };
-            
-            // Check if product already exists in cart
-            const existingIndex = cart.findIndex(item => item.id === newCartItem.id);
-            if (existingIndex > -1) {
+            // Check if this shelf's product already exists in cart
+            const key = cartKey(product.store_id, product.id);
+            const existing = cart.find(item => item.key === key);
+            if (existing) {
                 // If exists, increment quantity by 1 if stock allows
-                if (cart[existingIndex].quantity < cart[existingIndex].stock) {
-                    cart[existingIndex].quantity += 1;
+                if (existing.quantity < existing.stock) {
+                    existing.quantity += 1;
                 } else {
                     console.log('Not enough stock for: ' + product.name);
                     showScanError('Not enough stock: ' + product.name);
@@ -1278,14 +1734,17 @@ include 'includes/header.php';
                 }
             } else {
                 // If not exists, add new item with quantity 1
-                cart.push(newCartItem);
+                cart.push(Object.assign(productToCartLine(product), { quantity: 1 }));
             }
             
             updateCartDisplay();
 
             // Visual feedback
-            showScanSuccess(product.name);
+            showScanSuccess(product.name + (multiStore ? ' (' + storeLabel(product.store_id) + ')' : ''));
             playBeep();
+        } else if (matches.length > 1) {
+            showScanError('Ei barcode ' + matches.length + ' ta store-r shelf-e ache - age ekta store khun.');
+            playErrorBeep();
         } else {
             // Product not found
             console.log('Product not found for barcode:', barcode);
@@ -1317,16 +1776,21 @@ include 'includes/header.php';
             let loadedCount = 0;
 
             data.items.forEach(item => {
-                const product = productsData.find(p => parseInt(p.id) === item.product_id);
+                // Repeat sale: the goods come off the shelf the original bill went
+                // out of, not off whichever shelf this till is standing on.
+                const lineStore = parseInt(item.store_id) || parseInt(data.store_id) || 0;
+                const product = productsData.find(p => parseInt(p.id) === item.product_id
+                    && (!lineStore || parseInt(p.store_id) === lineStore));
                 const stock = product ? parseInt(product.stock) : (parseInt(item.stock) || 0);
+                const storeId = product ? parseInt(product.store_id) : lineStore;
                 if (stock <= 0) return;
-                cart.push({
-                    id: parseInt(item.product_id),
-                    name: item.product_name,
-                    price: parseFloat(item.unit_price),
+                cart.push(Object.assign(productToCartLine({
+                    id: item.product_id,
+                    store_id: storeId,
+                    sell_price: item.unit_price,
                     stock: stock,
-                    quantity: Math.min(parseInt(item.quantity) || 1, stock)
-                });
+                    name: item.product_name
+                }), { quantity: Math.min(parseInt(item.quantity) || 1, stock) }));
                 loadedCount++;
             });
 
@@ -1451,77 +1915,118 @@ include 'includes/header.php';
         cameraScanBtn.addEventListener('click', openCameraScan);
     }
 
-    document.querySelectorAll('.pos-category-btn').forEach(btn => {
-
+    // The two chip rows share the .pos-category-btn look but decide different
+    // things, so each keeps its own active state. Marking a store chip with the
+    // category handler used to clear every category chip and leave
+    // filterProducts() reading a dataset that had no category in it - the grid
+    // then hid itself.
+    const categoryChips = document.querySelectorAll('.pos-category-btn:not(.pos-store-btn)');
+    categoryChips.forEach(btn => {
         btn.addEventListener('click', function () {
-            document.querySelectorAll('.pos-category-btn').forEach(b => b.classList.remove('active'));
+            categoryChips.forEach(b => b.classList.remove('active'));
             this.classList.add('active');
             filterProducts();
         });
     });
 
+    const storeChips = document.querySelectorAll('.pos-store-btn');
+
+    function selectStoreChip(storeId) {
+        let hit = null;
+        document.querySelectorAll('.pos-store-btn').forEach(btn => {
+            const on = parseInt(btn.dataset.store) === parseInt(storeId);
+            btn.classList.toggle('active', on);
+            if (on) hit = btn;
+        });
+        if (!hit) return;
+        filterProducts();
+    }
+
+    storeChips.forEach(btn => {
+        btn.addEventListener('click', function () {
+            storeChips.forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            filterProducts();
+        });
+    });
+
+    // 0 means "every shelf", which is what "All stores" says. It is also the answer
+    // on a single-shop till, where there is only one shelf to choose from.
+    function activeStoreId() {
+        const btn = document.querySelector('.pos-store-btn.active');
+        if (!btn || btn.dataset.store === 'all') return 0;
+        return parseInt(btn.dataset.store) || 0;
+    }
+
     document.getElementById('productSearch').addEventListener('input', filterProducts);
 
     function filterProducts() {
         const search = document.getElementById('productSearch').value.toLowerCase();
-        const category = document.querySelector('.pos-category-btn.active').dataset.category;
+        const catBtn = document.querySelector('.pos-category-btn:not(.pos-store-btn).active');
+        const category = catBtn ? catBtn.dataset.category : 'all';
+        const store = activeStoreId();
         document.querySelectorAll('.pos-product-card').forEach(card => {
             const name = card.dataset.name.toLowerCase();
             const barcode = (card.dataset.barcode || '').toLowerCase();
             const cardCategory = card.dataset.category;
             const matchSearch = name.includes(search) || barcode.includes(search);
             const matchCategory = category === 'all' || cardCategory === category;
-            card.style.display = matchSearch && matchCategory ? 'flex' : 'none';
+            const matchStore = !store || parseInt(card.dataset.store) === store;
+            card.style.display = matchSearch && matchCategory && matchStore ? 'flex' : 'none';
         });
     }
 
     document.querySelectorAll('.pos-product-card').forEach(card => {
         card.addEventListener('click', function () {
-            addToCart({
-                id: parseInt(this.dataset.id),
+            addToCart(productToCartLine({
+                id: this.dataset.id,
+                store_id: this.dataset.store,
                 name: this.dataset.name,
-                price: parseFloat(this.dataset.price),
-                stock: parseInt(this.dataset.stock)
-            });
+                sell_price: this.dataset.price,
+                stock: this.dataset.stock
+            }));
         });
     });
 
-    function addToCart(product) {
-        const existing = cart.find(item => item.id === product.id);
+    function addToCart(line) {
+        const existing = cart.find(item => item.key === line.key);
         if (existing) {
-            if (existing.quantity < product.stock) {
+            if (existing.quantity < line.stock) {
                 existing.quantity++;
             } else {
-                alert('Not enough stock!');
+                alert('Not enough stock' + (multiStore ? ' at ' + line.storeName : '') + '!');
                 return;
             }
         } else {
-            cart.push({ ...product, quantity: 1 });
+            cart.push(Object.assign({}, line, { quantity: 1 }));
         }
         updateCartDisplay();
     }
 
-    function updateQuantity(productId, change) {
-        const item = cart.find(i => i.id === productId);
+    // Cart lines are found by their key (shelf + product), never by product id
+    // alone: two shops can both have ten pieces of the same shirt, and the two
+    // counts are different numbers that must not be edited together.
+    function updateQuantity(key, change) {
+        const item = cart.find(i => i.key === key);
         if (item) {
             const newQty = item.quantity + change;
             if (newQty <= 0) {
-                removeFromCart(productId);
+                removeFromCart(key);
             } else if (newQty <= item.stock) {
                 item.quantity = newQty;
                 updateCartDisplay();
             } else {
-                alert('Not enough stock!');
+                alert('Not enough stock' + (multiStore ? ' at ' + item.storeName : '') + '!');
             }
         }
     }
 
-    function setQuantity(productId, qty) {
-        const item = cart.find(i => i.id === productId);
+    function setQuantity(key, qty) {
+        const item = cart.find(i => i.key === key);
         if (item) {
             qty = parseInt(qty) || 0;
             if (qty <= 0) {
-                removeFromCart(productId);
+                removeFromCart(key);
             } else if (qty <= item.stock) {
                 item.quantity = qty;
                 updateCartDisplay();
@@ -1533,8 +2038,8 @@ include 'includes/header.php';
         }
     }
 
-    function removeFromCart(productId) {
-        cart = cart.filter(item => item.id !== productId);
+    function removeFromCart(key) {
+        cart = cart.filter(item => item.key !== key);
         updateCartDisplay();
     }
 
@@ -1558,25 +2063,23 @@ include 'includes/header.php';
             if (!saved) return;
             const savedCart = JSON.parse(saved);
             if (!Array.isArray(savedCart)) return;
-            cart = savedCart.filter(item => {
-                const product = productsData.find(p => parseInt(p.id) === item.id);
-                if (!product) return false;
-                item.stock = parseInt(product.stock);
-                item.price = parseFloat(product.sell_price);
-                item.name = product.name;
-                if (item.quantity > item.stock) item.quantity = item.stock;
-                return true;
-            });
+            cart = savedCart.map(item => {
+                const storeId = parseInt(item.store) || 0;
+                // Stock, price and name are re-read from the shelf: the browser's
+                // copy is from whenever this tab was last open, and a sale must be
+                // booked against what the shelf holds now.
+                const product = productsData.find(p => parseInt(p.id) === parseInt(item.id)
+                        && (!storeId || parseInt(p.store_id) === storeId))
+                    || productsData.find(p => parseInt(p.id) === parseInt(item.id));
+                if (!product) return null;
+                const line = productToCartLine(product);
+                line.quantity = Math.min(parseInt(item.quantity) || 1, line.stock);
+                return line;
+            }).filter(Boolean);
         } catch (e) {}
     }
 
-    // Call updateCartDisplay via timeout or direct call if data loaded
-    if (editSaleData) {
-        setTimeout(updateCartDisplay, 100);
-    } else {
-        loadCart();
-        updateCartDisplay();
-    }
+
 
     function updateCartDisplay() {
         const cartItems = document.getElementById('cartItems');
@@ -1598,14 +2101,15 @@ include 'includes/header.php';
                 <div class="pos-cart-item-info">
                     <div class="pos-cart-item-name">${item.name}</div>
                     <div class="pos-cart-item-price">${currency} ${item.price.toFixed(2)}</div>
+                    ${multiStore ? `<div class="pos-cart-item-store">${escapeHtml(item.storeName || '')}</div>` : ''}
                 </div>
                 <div class="pos-cart-item-qty">
-                    <button onclick="updateQuantity(${item.id}, -1)">-</button>
+                    <button onclick="updateQuantity('${item.key}', -1)">-</button>
                     <input type="number" value="${item.quantity}" min="1" max="${item.stock}" 
-                           onchange="setQuantity(${item.id}, this.value)">
-                    <button onclick="updateQuantity(${item.id}, 1)">+</button>
+                           onchange="setQuantity('${item.key}', this.value)">
+                    <button onclick="updateQuantity('${item.key}', 1)">+</button>
                 </div>
-                <button class="pos-cart-item-remove" onclick="removeFromCart(${item.id})">
+                <button class="pos-cart-item-remove" onclick="removeFromCart('${item.key}')">
                     <i class="far fa-trash-alt"></i>
                 </button>
             </div>
@@ -1618,35 +2122,108 @@ include 'includes/header.php';
         saveCart();
     }
 
-    function calculateTotals() {
-        const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    function round2(v) {
+        return Math.round(((Number(v) || 0) + Number.EPSILON) * 100) / 100;
+    }
+
+    /**
+     * Split an amount across shares so the parts add back to the whole.
+     *
+     * The poisha difference goes to the largest part, which is config/sale_split.php's
+     * saleShareMoney() rule. Copying it here is the only way the till's total and the
+     * booked total come out of the same arithmetic; if they differ by more than half a
+     * poisha the door refuses the basket outright.
+     */
+    function shareMoney(amount, shares) {
+        if (shares.length === 0) return [];
+        if (shares.length === 1) return [round2(amount)];
+
+        const parts = shares.map(s => round2(amount * s));
+        let used = 0;
+        parts.forEach(p => { used += p; });
+        used = round2(used);
+
+        let at = 0;
+        parts.forEach((p, i) => { if (p >= parts[at]) at = i; });
+        parts[at] = round2(parts[at] + (amount - used));
+        return parts;
+    }
+
+    /**
+     * The basket, split by shelf and priced the way the door prices it.
+     *
+     * Each line is rounded on its own and each shop is charged its own VAT rate on
+     * its own discounted share, because that is what admin/api/process-sale.php does
+     * from the settings of the shop that owns the store - not one rate across the
+     * whole basket, which would bill shop B at shop A's rate.
+     */
+    function storeBreakdown() {
+        const byStore = {};
+        cart.forEach(item => {
+            const storeId = parseInt(item.store) || 0;
+            if (!byStore[storeId]) {
+                byStore[storeId] = {
+                    store: storeId,
+                    name: storeLabel(storeId) || item.storeName || '',
+                    vat_percent: storeVatPercent(storeId),
+                    subtotal: 0
+                };
+            }
+            byStore[storeId].subtotal += round2(item.price * item.quantity);
+        });
+
+        const groups = Object.keys(byStore)
+            .map(k => byStore[k])
+            .sort((a, b) => a.store - b.store);
+        groups.forEach(g => { g.subtotal = round2(g.subtotal); });
+
+        const subtotal = round2(groups.reduce((s, g) => s + g.subtotal, 0));
 
         const discountType = document.getElementById('discountType').value;
         const discountValue = parseFloat(document.getElementById('discountValue').value) || 0;
 
-        let discountAmount = 0;
-        if (discountType === 'percent') {
-            discountAmount = subtotal * (discountValue / 100);
-        } else {
-            discountAmount = discountValue;
-        }
+        let discount = discountType === 'percent' ? subtotal * (discountValue / 100) : discountValue;
+        if (discount < 0) discount = 0;
+        if (discount > subtotal) discount = subtotal;
+        discount = round2(discount);
 
-        // Ensure discount doesn't exceed subtotal
-        if (discountAmount > subtotal) {
-            discountAmount = subtotal;
-        }
+        const discounts = shareMoney(discount, groups.map(g => (subtotal > 0 ? g.subtotal / subtotal : 0)));
 
-        const afterDiscount = subtotal - discountAmount;
-        const vatAmount = afterDiscount * (vatPercent / 100);
-        const total = afterDiscount + vatAmount;
+        let vat = 0;
+        let total = 0;
+        groups.forEach((g, i) => {
+            g.discount = discounts[i];
+            g.discount_percent = g.subtotal > 0 ? round2(discounts[i] / g.subtotal * 100) : 0;
+            const afterDiscount = round2(g.subtotal - g.discount);
+            g.vat_amount = round2(afterDiscount * (g.vat_percent / 100));
+            g.total = round2(afterDiscount + g.vat_amount);
+            vat = round2(vat + g.vat_amount);
+            total = round2(total + g.total);
+        });
 
-        document.getElementById('subtotal').textContent = `${currency} ${subtotal.toFixed(2)}`;
-        document.getElementById('discountAmount').textContent = `- ${currency} ${discountAmount.toFixed(2)}`;
-        document.getElementById('vatAmount').textContent = `${currency} ${vatAmount.toFixed(2)}`;
-        document.getElementById('totalAmount').textContent = `${currency} ${total.toFixed(2)}`;
+        return {
+            groups: groups,
+            subtotal: subtotal,
+            discount: discount,
+            discount_type: discountType,
+            discount_value: discountValue,
+            vat: vat,
+            total: total
+        };
+    }
+
+    function calculateTotals() {
+        currentBasket = storeBreakdown();
+        const b = currentBasket;
+
+        document.getElementById('subtotal').textContent = `${currency} ${b.subtotal.toFixed(2)}`;
+        document.getElementById('discountAmount').textContent = `- ${currency} ${b.discount.toFixed(2)}`;
+        document.getElementById('vatAmount').textContent = `${currency} ${b.vat.toFixed(2)}`;
+        document.getElementById('totalAmount').textContent = `${currency} ${b.total.toFixed(2)}`;
 
         document.getElementById('checkoutBtn').disabled = cart.length === 0;
 
+        renderStorePayments(b);
         calculateChange();
     }
 
@@ -1654,18 +2231,95 @@ include 'includes/header.php';
     document.getElementById('discountValue').addEventListener('input', calculateTotals);
     document.getElementById('paidAmount').addEventListener('input', calculateChange);
 
-    function calculateChange() {
-        const total = parseFloat(document.getElementById('totalAmount').textContent.replace(currency, '').trim()) || 0;
-        const paid = parseFloat(document.getElementById('paidAmount').value) || 0;
-        const change = paid - total;
+    // Initialize cart once all functions and listeners are ready
+    if (editSaleData) {
+        setTimeout(updateCartDisplay, 100);
+    } else {
+        loadCart();
+        updateCartDisplay();
+    }
 
-        document.getElementById('changeRow').style.display = paid > 0 ? 'flex' : 'none';
-        document.getElementById('changeAmount').innerHTML = `<strong>${currency} ${Math.max(0, change).toFixed(2)}</strong>`;
+    /**
+     * One tender per shop when a basket spans two of them.
+     *
+     * The cash physically goes into different tills and one shop's change cannot come
+     * out of another's drawer, so the door asks for a payment per store instead of
+     * guessing by splitting one number. An empty box is that shop's own total at
+     * checkout - paid in full being the normal thing at a counter.
+     */
+    function renderStorePayments(b) {
+        const box = document.getElementById('storePaymentRows');
+        const single = document.getElementById('singlePaymentRow');
+        if (!box || !single) return;
+
+        if (b.groups.length < 2) {
+            box.innerHTML = '';
+            box.style.display = 'none';
+            single.style.display = 'flex';
+            return;
+        }
+
+        const typed = {};
+        box.querySelectorAll('input[data-store-payment]').forEach(inp => {
+            typed[inp.dataset.storePayment] = inp.value;
+        });
+
+        single.style.display = 'none';
+        box.style.display = 'block';
+        box.innerHTML = b.groups.map(g => `
+            <div class="pos-store-payment-row">
+                <span class="pos-store-payment-name">${escapeHtml(g.name)}</span>
+                <span class="pos-store-payment-total">${currency} ${g.total.toFixed(2)}</span>
+                <input type="number" class="form-control" min="0" step="0.01"
+                       placeholder="Paid" data-store-payment="${g.store}"
+                       value="${typed[g.store] !== undefined ? escapeHtml(typed[g.store]) : ''}"
+                       oninput="calculateChange()">
+            </div>
+        `).join('');
+    }
+
+    function tenderedTotals() {
+        const b = currentBasket || storeBreakdown();
+        const rows = [];
+
+        if (b.groups.length > 1) {
+            const inputs = {};
+            document.querySelectorAll('#storePaymentRows input[data-store-payment]').forEach(inp => {
+                inputs[inp.dataset.storePayment] = parseFloat(inp.value) || 0;
+            });
+            b.groups.forEach(g => {
+                const paid = inputs[g.store] || 0;
+                rows.push({ store: g.store, name: g.name, total: g.total, paid: paid,
+                            change: Math.max(0, round2(paid - g.total)) });
+            });
+            return { basket: b, rows: rows, multi: true };
+        }
+
+        const paid = parseFloat(document.getElementById('paidAmount').value) || 0;
+        rows.push({ store: b.groups.length ? b.groups[0].store : 0, name: '', total: b.total, paid: paid,
+                    change: Math.max(0, round2(paid - b.total)) });
+        return { basket: b, rows: rows, multi: false };
+    }
+
+    function calculateChange() {
+        const t = tenderedTotals();
+        const change = t.rows.reduce((s, r) => s + r.change, 0);
+        const anyPaid = t.rows.some(r => r.paid > 0);
+
+        document.getElementById('changeRow').style.display = anyPaid ? 'flex' : 'none';
+        document.getElementById('changeAmount').innerHTML = `<strong>${currency} ${round2(change).toFixed(2)}</strong>`;
     }
 
     function setExactAmount() {
-        const total = parseFloat(document.getElementById('totalAmount').textContent.replace(currency, '').trim()) || 0;
-        document.getElementById('paidAmount').value = total.toFixed(2);
+        const b = currentBasket || storeBreakdown();
+        if (b.groups.length > 1) {
+            b.groups.forEach(g => {
+                const inp = document.querySelector(`#storePaymentRows input[data-store-payment="${g.store}"]`);
+                if (inp) inp.value = g.total.toFixed(2);
+            });
+        } else {
+            document.getElementById('paidAmount').value = b.total.toFixed(2);
+        }
         calculateChange();
     }
 
@@ -1685,55 +2339,58 @@ include 'includes/header.php';
             return;
         }
 
-        const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+        const b = storeBreakdown();
+        const t = tenderedTotals();
 
-        const discountType = document.getElementById('discountType').value;
-        const discountValue = parseFloat(document.getElementById('discountValue').value) || 0;
-
-        let discountAmount = 0;
-        let discountPercent = 0;
-
-        if (discountType === 'percent') {
-            discountPercent = discountValue;
-            discountAmount = subtotal * (discountPercent / 100);
-        } else {
-            discountAmount = discountValue;
-            // Calculate equivalent percent for record keeping if needed, or just 0
-            discountPercent = subtotal > 0 ? (discountAmount / subtotal * 100) : 0;
+        // Cash short on a bill is the one mistake a till cannot absorb quietly:
+        // which drawer the difference belongs to is decided by whose goods they
+        // are, so the shop is named rather than the total.
+        if (paymentMethod === 'cash') {
+            const short = t.rows.filter(r => r.paid > 0 && r.paid < r.total);
+            if (t.multi && short.length) {
+                alert(short.map(r => r.name + ': ' + currency + ' '
+                    + (r.total - r.paid).toFixed(2) + ' kom.').join('\n'));
+                return;
+            }
+            if (!t.multi && t.rows[0].paid > 0 && t.rows[0].paid < t.rows[0].total) {
+                alert('Paid amount is less than total!');
+                return;
+            }
         }
 
-        if (discountAmount > subtotal) discountAmount = subtotal;
-
-        const afterDiscount = subtotal - discountAmount;
-        const vatAmount = afterDiscount * (vatPercent / 100);
-        const total = afterDiscount + vatAmount;
-        const paidAmount = parseFloat(document.getElementById('paidAmount').value) || total;
-
-        if (paidAmount < total && paymentMethod === 'cash') {
-            alert('Paid amount is less than total!');
-            return;
-        }
+        const storePayments = {};
+        t.rows.forEach(r => { storePayments[r.store] = r.paid > 0 ? r.paid : r.total; });
 
         const saleData = {
             edit_sale_id: editSaleId, // ID if editing, 0 if new
+            // Same token on every retry of this basket; a fresh one is taken as
+            // soon as it is booked. This is what stops one double tap writing two
+            // sales and two sets of stock movements.
+            idempotency_key: saleToken,
             customer_id: document.getElementById('customerId').value ? parseInt(document.getElementById('customerId').value) : 0,
+            // Each line names the shelf it came off, which is what the server books
+            // the money, the stock and the report against - not whoever typed it.
             items: cart.map(item => ({
                 product_id: item.id,
                 product_name: item.name,
                 quantity: item.quantity,
                 unit_price: item.price,
-                total_price: item.price * item.quantity
+                total_price: round2(item.price * item.quantity),
+                store_id: item.store
             })),
-            subtotal: subtotal,
-            discount_type: discountType,
-            discount_value: discountValue,
-            discount_percent: discountPercent,
-            discount_amount: discountAmount,
-            vat_percent: vatPercent,
-            vat_amount: vatAmount,
-            total: total,
-            paid_amount: paidAmount,
-            change_amount: Math.max(0, paidAmount - total),
+            subtotal: b.subtotal,
+            discount_type: b.discount_type,
+            discount_value: b.discount_value,
+            discount_percent: b.discount_type === 'percent'
+                ? b.discount_value
+                : (b.subtotal > 0 ? round2(b.discount / b.subtotal * 100) : 0),
+            discount_amount: b.discount,
+            vat_percent: b.groups.length === 1 ? b.groups[0].vat_percent : vatPercent,
+            vat_amount: b.vat,
+            total: b.total,
+            paid_amount: t.multi ? 0 : (t.rows[0].paid || b.total),
+            store_payments: t.multi ? storePayments : undefined,
+            change_amount: round2(t.rows.reduce((s, r) => s + r.change, 0)),
             payment_method: paymentMethod
         };
 
@@ -1752,28 +2409,59 @@ include 'includes/header.php';
             const result = await response.json();
 
             if (result.success) {
-                // The sale id is taken from the response root, which is where the
-                // API has always put it, and copied onto the invoice if the API
-                // did not. The WhatsApp and SMS buttons both post this back, and
-                // a missing id reached them as "sale_id: undefined", which the
-                // server cannot read - the cashier then saw "Invoice number
-                // bujha jay ni" with no idea why. One line of belt here, because
-                // the failure is invisible until someone tries to send a receipt.
-                const inv = result.invoice || {};
-                if (inv.id == null && result.sale_id != null) inv.id = result.sale_id;
-                showInvoice(inv);
+                // One basket can be several bills: each shop's own sale, with its own
+                // invoice number, its own payment and its own stock movements.
+                // result.invoices is that list; result.invoice is its first, so a
+                // single-shop sale still gets the one bill it always got from the
+                // same field.
+                const list = (Array.isArray(result.invoices) && result.invoices.length)
+                    ? result.invoices
+                    : [result.invoice || {}];
+                // The sale id is copied onto the invoice if the API did not. The
+                // send button posts it back, and a missing one reached it as
+                // "sale_id: undefined", which the server cannot read
+                // - the cashier then saw "Invoice number bujha jay ni" with no idea
+                // why, because the failure is invisible until someone sends.
+                list.forEach(inv => {
+                    if (inv.id == null && result.sale_id != null) inv.id = result.sale_id;
+                });
+
+                showInvoices(list);
                 cart = [];
                 updateCartDisplay();
                 document.getElementById('customerId').value = '';
                 document.getElementById('customerSearch').value = '';
                 document.getElementById('discountValue').value = 0;
                 document.getElementById('paidAmount').value = '';
+                document.querySelectorAll('#storePaymentRows input').forEach(inp => { inp.value = ''; });
 
-                // Hand the receipt over by itself, as Settings > Invoice Delivery
+                // This basket is booked, so its token is spent. Reusing it would make
+                // the next customer's sale a replay of the receipt just printed.
+                saleToken = newSaleToken();
+
+                // Hand the receipts over by themselves, as Settings > Invoice Delivery
                 // asks. Fired after the cart has been cleared and the receipt is
                 // on screen, so the cashier is never made to wait for a phone
                 // network before they can start the next sale.
-                autoDeliverInvoice(result.notify || {});
+                const fallbackNotify = result.notify || {};
+                list.forEach(inv => autoDeliverInvoice(inv.notify || fallbackNotify, inv));
+
+                // The sale is saved; the paper copy is the staff app's job. A browser
+                // cannot open the printer's TCP port, so only the app's injected
+                // bridge answers here, and only the app decides whether Auto Print is
+                // on. Every failure is the app's to show: a printer that is switched
+                // off must never turn a completed sale into an error, and an edit is
+                // not a new sale to print.
+                if (!editSaleId && window.LanPrinter && typeof window.LanPrinter.printAuto === 'function') {
+                    list.forEach(inv => {
+                        try {
+                            window.LanPrinter.printAuto(inv, { jobId: String(inv.id || ''), source: 'pos' })
+                                .catch(() => {});
+                        } catch (e) {
+                            console.warn('LAN printer:', e);
+                        }
+                    });
+                }
 
                 // If editing, maybe redirect back to sales list or just refresh to clear edit mode?
                 // For now, reload to clear cart and edit mode
@@ -1800,25 +2488,71 @@ include 'includes/header.php';
         }
     }
 
-    function showInvoice(invoice) {
-        const facebookUrl = `<?php echo sanitize($settings['facebook_page'] ?? 'https://www.facebook.com'); ?>`;
-        const shopName = `<?php echo sanitize($settings['shop_name'] ?? 'POS System'); ?>`;
-        const shopAddress = `<?php echo sanitize($settings['shop_address'] ?? ''); ?>`;
-        const shopPhone = `<?php echo sanitize($settings['shop_phone'] ?? ''); ?>`;
-        const receiptFooter = `<?php echo sanitize($settings['receipt_footer'] ?? 'Thank you for shopping!'); ?>`;
-        const voucherTerms = `<?php echo sanitize($settings['voucher_terms'] ?? ''); ?>`;
+    /**
+     * The coupon QR, drawn in the page as an inline SVG.
+     *
+     * It used to be an <img> pointing at api.qrserver.com, which left an empty
+     * box wherever that request did not finish in time: a print preview that
+     * snapshots the page straight away, or a shop PC with no internet at all.
+     * Drawing it here means the preview, the printout and the slip all carry
+     * the same code and none of them need the network.
+     */
+    function couponQrSvg(url, size) {
+        if (!url || typeof qrcode === 'undefined') return '';
+        try {
+            const qr = qrcode(0, 'M');
+            qr.addData(url);
+            qr.make();
+            return qr.createSvgTag({ cellSize: 4, margin: 1, scalable: true })
+                .replace('<svg ', '<svg style="width:' + size + 'px;height:' + size + 'px;" ');
+        } catch (e) {
+            return '';
+        }
+    }
 
-        document.getElementById('invoiceContent').innerHTML = `
-        <style>
-            #printableInvoice * { font-weight: 900 !important; color: #000 !important; }
-        </style>
-        <div id="printableInvoice" style="font-family: 'Hind Siliguri', monospace; font-size: 12px; width: 100%; max-width: 300px; margin: 0 auto;">
+    function invoiceBillHtml(invoice, idx, multi) {
+        // The till page's own letterhead. It is only a fallback now: one basket can
+        // span two shops, and the second bill cannot be printed under the shop the
+        // cashier happens to be logged into.
+        const dFacebookUrl = `<?php echo sanitize($settings['facebook_page'] ?? 'https://www.facebook.com'); ?>`;
+        // Controlled from Settings > Invoice. Defaults to on when absent, which
+        // is how the receipt behaved before the setting existed.
+        const dShowQr = <?php
+            $qrOn = ($settings['invoice_show_qr'] ?? '1');
+            echo !($qrOn === '0' || $qrOn === 0 || $qrOn === '') ? 'true' : 'false';
+        ?>;
+        const dShopName = `<?php echo sanitize($settings['shop_name'] ?? 'POS System'); ?>`;
+        const dShopAddress = `<?php echo sanitize($settings['shop_address'] ?? ''); ?>`;
+        const dShopPhone = `<?php echo sanitize($settings['shop_phone'] ?? ''); ?>`;
+        const dReceiptFooter = `<?php echo sanitize($settings['receipt_footer'] ?? 'Thank you for shopping!'); ?>`;
+        const dVoucherTerms = `<?php echo sanitize($settings['voucher_terms'] ?? ''); ?>`;
+
+        // A bill that names its own shop wins; an older reply that does not still
+        // prints exactly the way it used to.
+        const facebookUrl = invoice.facebook_url || dFacebookUrl;
+        const showQr = (invoice.show_qr == null) ? dShowQr : (invoice.show_qr === 1 || invoice.show_qr === true);
+        const shopName = invoice.shop_name || dShopName;
+        const shopAddress = (invoice.shop_address == null) ? dShopAddress : invoice.shop_address;
+        const shopPhone = (invoice.shop_phone == null) ? dShopPhone : invoice.shop_phone;
+        const receiptFooter = invoice.receipt_footer || dReceiptFooter;
+        const voucherTerms = (invoice.voucher_terms == null) ? dVoucherTerms : invoice.voucher_terms;
+
+        return `
+        <div class="invoice-bill">
+            ${multi ? `
+            <div class="invoice-bill-bar">
+                <span>${escapeHtml(invoice.store_name || invoice.shop_name || '')}</span>
+                <span>
+                    <button type="button" onclick="sendInvoiceSms(${idx}, this)">SMS</button>
+                </span>
+            </div>` : ''}
+        <div class="printable-invoice" style="font-family: 'Hind Siliguri', monospace; font-size: 12px; width: 100%; max-width: 300px; margin: 0 auto;">
             <div style="text-align: center; margin-bottom: 1rem;">
                 <h3 style="margin: 0; font-size: 16px;">${shopName}</h3>
                 <p style="margin: 0.25rem 0; font-size: 11px;">${shopAddress}</p>
                 <p style="margin: 0.25rem 0; font-size: 11px;">${shopPhone}</p>
                 <div style="margin-top: 8px;">
-                    <svg id="invoiceReturnBarcode" data-barcode="${invoice.invoice_number}"></svg>
+                    <svg class="invoice-return-barcode" data-barcode="${invoice.invoice_number}"></svg>
                 </div>
             </div>
             <hr style="border-style: dashed;">
@@ -1887,35 +2621,18 @@ include 'includes/header.php';
             </div>
             ` : ''}
 
-            <div style="margin-top: 10px; border-top: 1px dashed #000; padding-top: 8px; font-size: 10px;">
-                <p style="margin: 0 0 4px 0; font-size: 11px; font-weight: bold;">পণ্য পরিবর্তন নীতি</p>
-                <p style="margin: 0; white-space: pre-line;">ক্রয়ের তারিখ থেকে ৭ দিনের মধ্যে পণ্য পরিবর্তন করা যাবে।\nপণ্যটি অবশ্যই অব্যবহৃত, অরিজিনাল এবং রসিদসহ হতে হবে।\nকোনো নগদ টাকা ফেরত দেওয়া হবে না।\nপণ্য পরিবর্তন পণ্যের প্রাপ্যতা ও দোকানের নীতিমালার ওপর নির্ভরশীল।</p>
-            </div>
             
-            ${invoice.coupon_status == '1' ? `
-            <div style="page-break-before: always; margin-top: 20px; border-top: 1px dashed #000; padding-top: 20px; font-family: monospace;">
-                <div style="border: 2px solid #000; padding: 10px; border-radius: 8px;">
-                    <h3 style="text-align: center; margin: 0 0 4px 0; font-size: 14px; text-transform: uppercase;">${invoice.coupon_title}</h3>
-                    <p style="text-align: center; margin: 0 0 8px 0; font-size: 11px;">${invoice.coupon_subtitle}</p>
+            
+            ${invoice.coupon_status == '1' ? (() => {
+                const totalQty = invoice.items.reduce((sum, item) => sum + parseInt(item.quantity || 1), 0);
 
-                    <div style="text-align: center; margin-bottom: 8px;">
-                        <img src="https://api.qrserver.com/v1/create-qr-code/?size=60x60&data=${encodeURIComponent(facebookUrl)}" alt="Facebook QR" style="width: 60px; height: 60px; border-radius: 4px;" />
-                        <p style="margin: 2px 0 0 0; font-size: 9px;">Scan for Facebook</p>
-                    </div>
-
-                    <div style="text-align: center; font-size: 10px; border: 1px dashed #000; padding: 4px; border-radius: 4px; margin-bottom: 6px;">
-                        ${invoice.coupon_prize_1} <br/> ${invoice.coupon_prize_2} <br/> ${invoice.coupon_prize_3} <br/> ${invoice.coupon_prize_4} <br/> ${invoice.coupon_prize_5}
-                    </div>
-
-                    <div style="text-align: center; font-size: 10px; margin-bottom: 4px;">${invoice.coupon_total_winners}</div>
-
-                    <div style="font-size: 9px; text-align: center; border-bottom: 1px dashed #000; padding-bottom: 6px; margin-bottom: 8px;">
-                        ${invoice.coupon_announcement}
-                    </div>
-
-                    <div style="font-size: 11px;">
-                        <div style="text-align: center; margin-bottom: 6px; border: 1px solid #000; padding: 4px; font-size: 13px;">
-                            SC-${invoice.invoice_number}
+                // Build the N slips (one per qty)
+                let slips = '';
+                for (let i = 1; i <= totalQty; i++) {
+                    slips += `
+                    <div style="margin-top: 10px; border: 1px solid #000; padding: 6px; border-radius: 4px; font-size: 11px; page-break-inside: avoid;">
+                        <div style="text-align: center; margin-bottom: 6px; border: 1px solid #000; padding: 4px; font-size: 13px; font-weight: bold;">
+                            SC-${invoice.invoice_number}${totalQty > 1 ? '-' + i : ''}
                         </div>
                         <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                             <span>Name:</span> <span>${invoice.customer_name}</span>
@@ -1926,38 +2643,85 @@ include 'includes/header.php';
                         <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                             <span>Date:</span> <span>${invoice.date || ''}</span>
                         </div>
-                        <div style="margin-top: 25px; text-align: right; border-top: 1px dashed #000; display: inline-block; float: right; padding-top: 4px;">Shop seal & signature</div>
                         <div style="clear: both;"></div>
+                    </div>`;
+                }
+
+                // ONE coupon header + all slips
+                return `
+            <div style="page-break-before: always; margin-top: 20px; border-top: 1px dashed #000; padding-top: 20px; font-family: monospace;">
+                <div style="border: 2px solid #000; padding: 10px; border-radius: 8px;">
+                    <h3 style="text-align: center; margin: 0 0 4px 0; font-size: 14px; text-transform: uppercase;">${invoice.coupon_title}</h3>
+                    <p style="text-align: center; margin: 0 0 8px 0; font-size: 11px;">${invoice.coupon_subtitle}</p>
+                    <div style="text-align: center; margin-bottom: 8px;">
+                        ${showQr ? `<div style="display: flex; justify-content: center;">${couponQrSvg(facebookUrl, 60)}</div>
+                        <p style="margin: 2px 0 0 0; font-size: 9px;">Scan for Facebook</p>` : ''}
                     </div>
+                    <div style="text-align: center; font-size: 10px; border: 1px dashed #000; padding: 4px; border-radius: 4px; margin-bottom: 6px;">
+                        ${invoice.coupon_prize_1} <br/> ${invoice.coupon_prize_2} <br/> ${invoice.coupon_prize_3} <br/> ${invoice.coupon_prize_4} <br/> ${invoice.coupon_prize_5}
+                    </div>
+                    <div style="text-align: center; font-size: 10px; margin-bottom: 4px;">${invoice.coupon_total_winners}</div>
+                    <div style="font-size: 9px; text-align: center; border-bottom: 1px dashed #000; padding-bottom: 6px; margin-bottom: 8px;">
+                        ${invoice.coupon_announcement}
+                    </div>
+                    ${slips}
                 </div>
-            </div>
-            ` : ''}
+            </div>`;
+            })() : ''}
         </div>
-    `;
+        </div>`;
+    }
+
+    /**
+     * Put every bill this basket came out of on screen, one under the other.
+     *
+     * A sale that touched two shops is two sales on the server - two invoice
+     * numbers, two payments, two sets of stock movements - and a customer who gets
+     * one receipt for it is a customer with no proof of what they paid at the
+     * second shop. So the modal prints each bill with its own shop's letterhead.
+     */
+    function showInvoices(list) {
+        const bills = (Array.isArray(list) ? list : [list]).filter(Boolean);
+        if (!bills.length) return;
+        const multi = bills.length > 1;
+
+        document.getElementById('invoiceContent').innerHTML = `
+        <style>
+            .printable-invoice * { font-weight: 900 !important; color: #000 !important; }
+        </style>` + bills.map((inv, idx) => invoiceBillHtml(inv, idx, multi)).join('');
+
         document.getElementById('invoiceModal').classList.add('active');
         renderInvoiceBarcode();
-        shownInvoice = invoice;
-        // Without an id the two send buttons cannot name the sale, and they would
+
+        shownInvoices = bills;
+        shownInvoice = bills[0];
+
+        // Without an id the send button cannot name the sale, and it would
         // post a null and be told the invoice number was unreadable - which reads
         // like the cashier's mistake. Say what is actually wrong instead.
-        const waBtn = document.getElementById('invoiceWaBtn');
         const smsBtn = document.getElementById('invoiceSmsBtn');
-        const sendable = !!(invoice && invoice.id);
-        if (waBtn) waBtn.disabled = !sendable;
+        // Two bills and one footer button means the button can only ever
+        // mean one of them, so each bill carries its own and this one steps
+        // aside rather than sending the wrong shop's receipt.
+        if (smsBtn) smsBtn.style.display = multi ? 'none' : '';
+        const sendable = !!(shownInvoice && shownInvoice.id);
         if (smsBtn) smsBtn.disabled = !sendable;
     }
 
     /**
-     * The invoice currently on screen, kept so the WhatsApp button knows which
-     * sale it is talking about. Held as data rather than re-read out of the
-     * modal's HTML, because parsing a rendered receipt back into numbers is how
-     * a button ends up sending the wrong one.
+     * The invoices currently on screen, kept so the SMS button knows
+     * which sale it is talking about. Held as data rather than re-read out of
+     * the modal's HTML, because parsing a rendered receipt back into numbers is how
+     * a button ends up sending the wrong one. There is more than one of them now:
+     * a basket that spans two shops is one bill per shop.
      */
+    let shownInvoices = [];
     let shownInvoice = null;
 
     function renderInvoiceBarcode() {
-        const svg = document.getElementById('invoiceReturnBarcode');
-        if (svg && typeof JsBarcode !== 'undefined' && svg.dataset.barcode) {
+        if (typeof JsBarcode === 'undefined') return;
+        document.querySelectorAll('.invoice-return-barcode').forEach(svg => {
+            if (!svg.dataset.barcode) return;
             try {
                 JsBarcode(svg, svg.dataset.barcode, {
                     format: 'CODE128',
@@ -1966,7 +2730,7 @@ include 'includes/header.php';
                     displayValue: false
                 });
             } catch (e) {}
-        }
+        });
     }
 
     function closeInvoiceModal() {
@@ -1983,28 +2747,20 @@ include 'includes/header.php';
      * there and still work.
      *
      * @param {object} n  the notify block the sale API returns
+     * @param {object} inv  the bill this send is about - one per shop, not one per basket
      */
-    function autoDeliverInvoice(n) {
+    function autoDeliverInvoice(n, inv) {
+        const invoice = inv || shownInvoice;
         if (!n || !n.auto) return;
         if (n.is_edit) return;                 // a corrected sale must not resend
-        if (!shownInvoice || !shownInvoice.id) return;
+        if (!invoice || !invoice.id) return;
 
-        // "Only to numbers confirmed on WhatsApp" is a promise, so an unchecked
-        // number is skipped rather than sent to. has_whatsapp is null when the
-        // check has never been run - the shop simply has not checked its numbers
-        // - and that is not a "no", so the promise is kept only where there is an
-        // answer to keep it with.
-        if (n.whatsapp_only && n.whatsapp && n.has_whatsapp !== 1) return;
-
-        const phone = (shownInvoice.customer_phone || '').trim();
+        const phone = (invoice.customer_phone || '').trim();
         if (!phone) return;                    // nothing to send to, and no prompting on auto
 
-        const wanted = [];
-        if (n.whatsapp) wanted.push('wa');
-        if (n.sms) wanted.push('sms');
-        wanted.forEach(function (kind) {
-            deliverInvoiceRequest(kind, phone, true);
-        });
+        if (n.sms) {
+            deliverInvoiceRequest('sms', phone, true, invoice);
+        }
     }
 
     /**
@@ -2016,16 +2772,17 @@ include 'includes/header.php';
      * catch had nothing but the word "failed" to offer. The body is read as text
      * now and parsed by hand, so a non-JSON answer is reported for what it is.
      */
-    async function deliverInvoiceRequest(kind, phone, quiet) {
-        const api = (kind === 'wa') ? 'api/invoice-send.php' : 'api/invoice-sms.php';
-        const label = (kind === 'wa') ? 'WhatsApp' : 'SMS';
+    async function deliverInvoiceRequest(kind, phone, quiet, inv) {
+        const invoice = inv || shownInvoice;
+        const api = 'api/invoice-sms.php';
+        const label = 'SMS';
 
         let res, text;
         try {
             res = await fetch(api, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sale_id: shownInvoice.id, phone: phone })
+                body: JSON.stringify({ sale_id: invoice.id, phone: phone })
             });
             text = await res.text();
         } catch (err) {
@@ -2068,10 +2825,10 @@ include 'includes/header.php';
      * Text the cashier can copy when the SMS gateway is not configured.
      *
      * The endpoint hands the message back whenever it could not send it itself,
-     * which is the normal state of a shop that has not bought an SMS credit yet.
+     * which is the normal state of a shop that has not configured a gateway yet.
      * Rather than telling the cashier "failed" and leaving the feature unusable
-     * until someone configures a provider, the text is put on screen with the
-     * link selected, because the phone is already in their other hand.
+     * until someone configures a provider, the text is put on screen already
+     * selected, because the phone is already in their other hand.
      */
     function showInvoiceSmsText(text, message) {
         if (message) alert(message);
@@ -2095,26 +2852,27 @@ include 'includes/header.php';
     }
 
     /**
-     * Send the invoice link by SMS.
+     * Send the invoice receipt by SMS.
      *
      * Manual on purpose. An SMS costs money per message, so this is a button the
      * cashier presses rather than something that fires on every sale - the shop
      * decides who gets a text copy.
      */
-    async function sendInvoiceSms() {
-        if (!shownInvoice) return;
-        if (!shownInvoice.id) {
+    async function sendInvoiceSms(idx, btnArg) {
+        const invoice = (idx == null) ? shownInvoice : shownInvoices[idx];
+        if (!invoice) return;
+        if (!invoice.id) {
             alert('Ei invoice er number nai, tai pathano jay na.');
             return;
         }
 
-        let phone = (shownInvoice.customer_phone || '').trim();
+        let phone = (invoice.customer_phone || '').trim();
         if (!phone) {
             phone = (prompt('Ei customer er kono number nai.\nSMS e pathate chay number ta likhun:') || '').trim();
             if (!phone) return;
         }
 
-        const btn = document.getElementById('invoiceSmsBtn');
+        const btn = btnArg || document.getElementById('invoiceSmsBtn');
         const original = btn.innerHTML;
         btn.disabled = true;
         btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
@@ -2124,7 +2882,7 @@ include 'includes/header.php';
         // body is read as text there and parsed by hand, which is what lets a PHP
         // error page be shown as the reason instead of being swallowed into a
         // bare "could not send".
-        const done = await deliverInvoiceRequest('sms', phone, false);
+        const done = await deliverInvoiceRequest('sms', phone, false, invoice);
 
         btn.disabled = false;
         if (done.ok && !done.result.manual) {
@@ -2139,74 +2897,14 @@ include 'includes/header.php';
         }
     }
 
-    /**
-     * Queue this invoice for WhatsApp.
-     *
-     * Deliberately does not wait for delivery. The receipt is drawn by the
-     * browser on the shop PC, so a request that held itself open for the answer
-     * would sit on a shared host for most of a minute doing nothing. The button
-     * says "queued" once the job is safely in the queue, and says exactly that -
-     * the shop is not told it was sent when it has only been asked for.
-     */
-    async function sendInvoiceWhatsApp() {
-        if (!shownInvoice) return;
-        if (!shownInvoice.id) {
-            alert('Ei invoice er number nai, tai pathano jay na.');
-            return;
-        }
-
-        // A walk-in has no customer record, so the invoice carries no number. The
-        // counter phone is the one they will answer on, so ask for it rather than
-        // refusing the one sale most likely to want a copy.
-        let phone = (shownInvoice.customer_phone || '').trim();
-        if (!phone) {
-            phone = (prompt('Ei customer er kono number nai.\nWhatsApp e pathate chay number ta likhun:') || '').trim();
-            if (!phone) return;
-        }
-
-        const btn = document.getElementById('invoiceWaBtn');
-        const original = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
-
-        const done = await deliverInvoiceRequest('wa', phone, false);
-
-        if (done.ok) {
-            btn.innerHTML = '<i class="fas fa-check"></i> Queued';
-            // Left disabled on purpose: the job is queued, and a second press
-            // would put another copy of the same receipt in the chat.
-            setTimeout(() => {
-                if (document.getElementById('invoiceModal').classList.contains('active')) {
-                    closeInvoiceModal();
-                }
-            }, 1200);
-        } else {
-            btn.disabled = false;
-            btn.innerHTML = original;
-        }
-    }
-
     async function printInvoice() {
-        let printContent = document.getElementById('printableInvoice').innerHTML;
-        
-        // Pre-fetch all QR images as base64 data URIs
-        const qrMatches = printContent.match(/src="(https:\/\/api\.qrserver\.com[^"]+)"/g);
-        if (qrMatches) {
-            for (const match of qrMatches) {
-                const url = match.match(/src="([^"]+)"/)[1];
-                try {
-                    const resp = await fetch(url);
-                    const blob = await resp.blob();
-                    const base64 = await new Promise((resolve) => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => resolve(reader.result);
-                        reader.readAsDataURL(blob);
-                    });
-                    printContent = printContent.replace(url, base64);
-                } catch(e) {}
-            }
-        }
-        
+        // Every bill the basket produced, in one print run: a customer who bought
+        // across two shops takes both receipts home, not only the first one drawn.
+        const bills = Array.from(document.querySelectorAll('#invoiceContent .printable-invoice'));
+        if (!bills.length) return;
+        let printContent = bills.map(bill => bill.outerHTML)
+            .join('<div style="page-break-after: always;"></div>');
+
         const printWindow = window.open('', '_blank');
         printWindow.document.write(`
         <html>
@@ -2216,8 +2914,8 @@ include 'includes/header.php';
             <link rel="stylesheet" href="<?php echo htmlspecialchars(assetUrl('assets/css/hind-siliguri.css'), ENT_QUOTES, 'UTF-8'); ?>">
             <style>
                 body { font-family: 'Hind Siliguri', sans-serif; font-size: 12px; margin: 0; padding: 10px; }
-                #printableInvoice * { font-weight: 900 !important; color: #000 !important; }
-                #invoiceReturnBarcode { height: 50px; }
+                .printable-invoice * { font-weight: 900 !important; color: #000 !important; }
+                .invoice-return-barcode { height: 50px; }
                 hr { border-style: dashed; }
                 table { width: 100%; border-collapse: collapse; }
                 th, td { padding: 2px 0; }
@@ -2234,8 +2932,8 @@ include 'includes/header.php';
         printWindow.document.close();
         printWindow.onload = function() {
             const doPrint = function() {
-                const barcode = printWindow.document.getElementById('invoiceReturnBarcode');
-                if (barcode && typeof printWindow.JsBarcode !== 'undefined' && barcode.dataset.barcode) {
+                printWindow.document.querySelectorAll('.invoice-return-barcode').forEach(barcode => {
+                    if (!barcode.dataset.barcode || typeof printWindow.JsBarcode === 'undefined') return;
                     try {
                         printWindow.JsBarcode(barcode, barcode.dataset.barcode, {
                             format: 'CODE128',
@@ -2244,7 +2942,7 @@ include 'includes/header.php';
                             displayValue: false
                         });
                     } catch (e) {}
-                }
+                });
                 const images = printWindow.document.querySelectorAll('img');
                 let loaded = 0;
                 const total = images.length;
@@ -2282,46 +2980,6 @@ include 'includes/header.php';
         document.getElementById('createCustomerForm').reset();
     }
 
-    /**
-     * Ask whether one customer is on WhatsApp, after they have been saved.
-     *
-     * The three answers are kept apart, because they are three different facts:
-     * on WhatsApp, not on WhatsApp, and not checked yet. Reporting the last one as
-     * the second would tell a shopkeeper to stop writing to a customer who is
-     * perfectly reachable.
-     *
-     * The number itself is refreshed in the local list too, so the badge in the
-     * dropdown matches what was just decided.
-     */
-    async function checkCustomerWhatsApp(customerId) {
-        if (!customerId) return;
-        try {
-            const res = await fetch('api/customer-wa-check.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ customer_id: customerId })
-            });
-            const result = await res.json();
-            if (!result || !result.success) return;
-
-            const c = customersData.find(function (x) { return x.id === customerId; });
-            if (c) { c.has_whatsapp = result.has_wa; }
-
-            if (result.has_wa === true) {
-                alert('WhatsApp ache: ' + (result.text || 'Ei number e WhatsApp ache'));
-            } else if (result.has_wa === false) {
-                alert('WhatsApp nai: ' + (result.text || 'Ei number e WhatsApp nai'));
-            } else {
-                // A bridge that is offline is normal, and saying so plainly beats
-                // an error the cashier cannot act on.
-                alert(result.message || 'WhatsApp check hoye ni.');
-            }
-        } catch (err) {
-            // Never let this become a second failure on top of a successful save.
-            console.error('whatsapp check:', err);
-        }
-    }
-
     async function submitCustomerForm(e) {
         e.preventDefault();
         const form = document.getElementById('createCustomerForm');
@@ -2343,8 +3001,6 @@ include 'includes/header.php';
                 selectCustomer(result.customer.id);
 
                 closeCustomerModal();
-                alert('Customer added successfully!');
-                checkCustomerWhatsApp(result.customer.id);
             } else {
                 alert(result.message || 'Error adding customer');
             }

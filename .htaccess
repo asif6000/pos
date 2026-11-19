@@ -29,7 +29,12 @@ DirectoryIndex index.php index.html
     Require all denied
 </FilesMatch>
 
-<FilesMatch "^(migrate_|migrate$|fix_|quick_fix|delete_store_fix|domain-setup|manage_stores|php_info|debug_|test_|check_|reset_admin|create_koro)">
+# The trailing alternatives are prefixes, not suffixes, so they are anchored at
+# the start of the filename - "test_" matches test_*.php but not test-*.php.
+# Diagnostics named "test-*" slipped through that gap once, both scripts that
+# execute on the server and print their findings. "test-" is now listed beside
+# "test_".
+<FilesMatch "^(migrate_|migrate$|fix_|quick_fix|delete_store_fix|domain-setup|manage_stores|php_info|debug_|test_|test-|check_|reset_admin|create_koro)">
     Require all denied
 </FilesMatch>
 # Include-only and storage directories. config/ holds the database credentials and

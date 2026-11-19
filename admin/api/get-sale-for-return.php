@@ -22,11 +22,29 @@ if (empty($invoice)) {
 }
 
 $db = getDB();
+$currentUser = getCurrentUser();
+$ownerId = $currentUser['owner_id'];
 
 try {
     // Find sale by invoice number (cross-store lookup)
-    $stmt = $db->prepare("SELECT s.* FROM sales s WHERE s.invoice_number = ?");
-    $stmt->execute([$invoice]);
+    //
+    // The read is scoped twice: a counter account (staff/cashier) may only see
+    // its own bills, and every account but the platform Super Admin is kept
+    // inside its own shop - an unscoped read answered for any shop's sale and
+    // priced a return against whoever happened to ask.
+    list($ownScope, $ownParams) = ownSalesScopeSql($currentUser);
+    $scopeSql = " AND " . saleOwnerScopeSql($ownerId);
+    $scopeParams = [$ownerId, $ownerId];
+    if (isSuperAdminUser($currentUser)) {
+        $scopeSql = '';
+        $scopeParams = [];
+    }
+    $scopeSql .= $ownScope;
+    $scopeParams = array_merge($scopeParams, $ownParams);
+
+    $stmt = $db->prepare("SELECT s.* FROM sales s JOIN users u ON s.user_id = u.id
+                          WHERE s.invoice_number = ?" . $scopeSql);
+    $stmt->execute(array_merge([$invoice], $scopeParams));
     $sale = $stmt->fetch();
 
     if (!$sale) {

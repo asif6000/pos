@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * Cashier Header Component
  * Simplified navigation for cashiers
@@ -59,38 +59,29 @@ $shopName = $settings['shop_name'] ?? 'POS System';
             </div>
 
             <nav class="sidebar-nav">
-                    <?php
-                    // What this role may open, in one place. Both this sidebar and
-                    // the cashier one walk the same list, so a permission granted on
-                    // the Roles page shows up here the same way it does in the admin
-                    // menu. Nothing is printed for a role that can open none of it.
-                    $navItems = permissionNavItems();
-                    $navShown = array();
-                    foreach ($navItems as $ni) {
-                        if (hasPermission($ni['need'])) { $navShown[] = $ni; }
-                    }
-                    ?>
-                    <?php if ($navShown): ?>
-                    <div class="nav-section">
-                        <div class="nav-section-title">Main</div>
-                        <?php foreach ($navShown as $ni): ?>
-                        <a href="../admin/<?php echo $ni['page']; ?>"
-                            class="nav-item <?php echo $currentPage === basename($ni['page'], '.php') ? 'active' : ''; ?>">
-                            <i class="fas <?php echo $ni['icon']; ?>"></i>
-                            <span><?php echo sanitize($ni['label']); ?></span>
-                        </a>
-                        <?php endforeach; ?>
-                    </div>
-                    <?php endif; ?>
-                    <?php if (hasPermission('staff') || staffProfileExists($user)): ?>
-                    <div class="nav-section">
-                        <div class="nav-section-title">My Account</div>
-                        <a href="dashboard.php" class="nav-item <?php echo $currentPage === 'dashboard' ? 'active' : ''; ?>">
-                            <i class="fas fa-user-circle"></i>
-                            <span>My Staff Profile</span>
-                        </a>
-                    </div>
-                    <?php endif; ?>
+                <div class="nav-section">
+                    <div class="nav-section-title">Staff Menu</div>
+                    <a href="dashboard.php" class="nav-item <?php echo $currentPage === 'dashboard' ? 'active' : ''; ?>">
+                        <i class="fas fa-tachometer-alt"></i>
+                        <span>Dashboard</span>
+                    </a>
+                    <a href="pos.php" class="nav-item <?php echo $currentPage === 'pos' ? 'active' : ''; ?>">
+                        <i class="fas fa-cash-register"></i>
+                        <span>POS / Billing</span>
+                    </a>
+                    <a href="sales.php" class="nav-item <?php echo $currentPage === 'sales' ? 'active' : ''; ?>">
+                        <i class="fas fa-list"></i>
+                        <span>Sales List</span>
+                    </a>
+                    <a href="returns.php" class="nav-item <?php echo $currentPage === 'returns' ? 'active' : ''; ?>">
+                        <i class="fas fa-undo"></i>
+                        <span>Sales Return</span>
+                    </a>
+                    <a href="expense.php" class="nav-item <?php echo $currentPage === 'expense' ? 'active' : ''; ?>">
+                        <i class="fas fa-money-bill-wave"></i>
+                        <span>Expense</span>
+                    </a>
+                </div>
             </nav>
 
             <div class="sidebar-footer">
@@ -99,19 +90,19 @@ $shopName = $settings['shop_name'] ?? 'POS System';
                         <?php echo strtoupper(substr($user['name'], 0, 1)); ?>
                     </div>
                     <div class="user-details">
-                        <div class="user-name">
-                            <?php echo sanitize($user['name']); ?>
-                        </div>
-                        <div class="user-role"><?php echo sanitize(ucfirst((string)($user['role'] ?? 'cashier'))); ?></div>
+                        <div class="user-name"><?php echo sanitize($user['name']); ?></div>
+                        <div class="user-role"><?php echo ucfirst(sanitize($user['role'])); ?></div>
                     </div>
-                    <a href="../logout.php" class="header-btn" title="Logout">
-                        <i class="fas fa-sign-out-alt"></i>
-                    </a>
                 </div>
+                <a href="../logout.php" class="logout-btn" title="Logout">
+                    <i class="fas fa-sign-out-alt"></i>
+                </a>
             </div>
         </aside>
 
+        <!-- Main Content -->
         <main class="main-content">
+            <!-- Header -->
             <header class="header">
                 <div class="header-left">
                     <button class="menu-toggle" id="menuToggle">
@@ -121,11 +112,22 @@ $shopName = $settings['shop_name'] ?? 'POS System';
                         <?php echo PAGE_TITLE ?? 'POS'; ?>
                     </h1>
                 </div>
+                
+                <nav class="header-shortcuts">
+                    <a href="pos.php" class="header-shortcut <?php echo $currentPage === 'pos' ? 'active' : ''; ?>" title="POS / Billing"><i class="fas fa-cash-register"></i><span>POS</span></a>
+                    <a href="sales.php" class="header-shortcut <?php echo $currentPage === 'sales' ? 'active' : ''; ?>" title="Sales"><i class="fas fa-list"></i><span>Sales</span></a>
+                    <a href="expense.php" class="header-shortcut <?php echo $currentPage === 'expense' ? 'active' : ''; ?>" title="Expense"><i class="fas fa-money-bill-wave"></i><span>Expense</span></a>
+                </nav>
+
                 <div class="header-right">
+                    <button class="header-btn" id="fullscreenBtn" title="Fullscreen">
+                        <i class="fas fa-expand"></i>
+                    </button>
                     <a href="../logout.php" class="header-btn" title="Logout">
                         <i class="fas fa-sign-out-alt"></i>
                     </a>
                 </div>
             </header>
 
+            <!-- Page Content -->
             <div class="content">

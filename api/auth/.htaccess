@@ -1,0 +1,24 @@
+# /api/auth/login and /api/auth/phone/send-otp are the addresses in the product
+# spec; the files are login.php and phone/send-otp.php. A client should not have to
+# know which convention the server happens to store its code in, so both spellings
+# reach the same script.
+#
+# Wrapped in IfModule for the reason the root .htaccess gives: on a host where
+# mod_rewrite is not loaded, an unguarded RewriteEngine turns every one of these
+# endpoints into a 500. Without the block, the .php URLs simply work and the short
+# ones do not - which is the failure this file was written to avoid, not a new one.
+<IfModule mod_autoindex.c>
+    Options -Indexes
+</IfModule>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # One to three path segments, each a lowercase name, optionally with a trailing
+    # slash. Anchored to a strict shape on purpose: a rule loose enough to rewrite
+    # anything is a rule that will rewrite a path this folder has not thought of
+    # yet, and the query string is preserved rather than appended to the filename.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^((?:[a-z][a-z0-9_-]{0,40})(?:/[a-z][a-z0-9_-]{0,40}){0,2})/?$ $1.php [L,QSA]
+</IfModule>

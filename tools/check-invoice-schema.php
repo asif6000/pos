@@ -39,23 +39,13 @@ $needs = [
         'unit_price', 'total_price',
     ],
     'customers' => [
-        'id', 'name', 'phone', 'owner_id', 'has_whatsapp', 'whatsapp_checked_at',
+        'id', 'name', 'phone', 'owner_id',
     ],
     'users' => [
         'id', 'name', 'owner_id',
     ],
     'settings' => [
         'setting_key', 'setting_value', 'owner_id',
-    ],
-    'wa_jobs' => [
-        'id', 'owner_id', 'kind', 'to', 'payload', 'payload_html',
-        'campaign_id', 'recipient_id', 'status', 'result', 'error',
-        'wa_message_id', 'request_key', 'attempts', 'available_at',
-        'claim_token', 'claimed_at',
-    ],
-    'wa_agents' => [
-        'id', 'owner_id', 'status', 'me_name', 'me_id', 'qr', 'events',
-        'catalog_chats', 'catalog_contacts', 'command', 'last_seen',
     ],
 ];
 

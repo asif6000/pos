@@ -17,8 +17,8 @@
  *     up in a search result.
  *
  * The receipt itself is built by invoiceBuildHtml(), the same function the
- * WhatsApp image uses, so the page a customer opens and the picture they were
- * sent can never disagree about what they bought.
+ * mobile invoice image uses, so the page a customer opens and the picture they
+ * were sent can never disagree about what they bought.
  */
 // Set once this page has decided what to show. The shutdown handler reads it.
 $GLOBALS['invoice_view_answered'] = false;
@@ -195,8 +195,8 @@ if (empty($built['ok']) || empty($built['html'])) {
     invoicePublicSorry();
 }
 
-// invoiceBuildHtml() returns a complete document, because it is drawn to a PNG
-// by the bridge. The page needs the same receipt with a page's worth of
+// invoiceBuildHtml() returns a complete document, because it is also drawn to an
+// invoice image. The page needs the same receipt with a page's worth of
 // furniture around it, so the document is unwrapped rather than the markup
 // rebuilt - two descriptions of a receipt would drift, and the customer would be
 // shown one thing while the shop sent another.

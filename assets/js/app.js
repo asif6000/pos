@@ -6,9 +6,79 @@
 // DOM Ready
 document.addEventListener('DOMContentLoaded', function() {
     initSidebar();
+    initSidebarNav();
     initAlerts();
     initFullscreen();
+    initResponsiveTables();
 });
+
+/**
+ * Label every table cell with its column header, so a phone can show one row
+ * as one card instead of a 10-column sheet that has to be dragged sideways.
+ *
+ * The header text is already on the page once, so rather than editing the
+ * markup of the fifteen pages that own a table, the label is read off the
+ * <thead> and written onto each cell as data-label. The stylesheet then draws
+ * "Label   value" lines (see the MOBILE RESPONSIVE PASS block in
+ * assets/css/style.css). Nothing here is width-dependent: the same attributes
+ * sit unused on a desktop, where the table renders normally.
+ *
+ * Tables that really are matrices - the permission grid - opt out with
+ * .table-matrix, because stacking a page-by-role grid of ticks destroys the
+ * one thing it shows.
+ *
+ * Rows that JavaScript writes later (the stock history modal, the returns
+ * detail lines) are caught by the observer, which watches for added nodes
+ * only: setting data-label is an attribute change, so labelling can never
+ * re-trigger itself.
+ */
+function initResponsiveTables() {
+    function labelTables(root) {
+        (root || document).querySelectorAll('table.table:not(.table-matrix)').forEach(function(table) {
+            const heads = [].slice.call(table.querySelectorAll('thead th'))
+                .map(function(th) { return th.textContent.trim(); });
+            if (!heads.length) return;
+
+            table.querySelectorAll('tbody tr').forEach(function(row) {
+                const cells = [].slice.call(row.children);
+                cells.forEach(function(cell, i) {
+                    if (cell.tagName !== 'TD') return;
+                    if (cell.colSpan > 1) return;           // the "nothing found" line
+                    if (!cell.hasAttribute('data-label') && heads[i]) {
+                        cell.setAttribute('data-label', heads[i]);
+                    }
+                    // A cell of two or more buttons (the Actions column on nearly
+                    // every list) needs to be allowed to wrap, or six icon buttons
+                    // hang off the right edge of a 320px card.
+                    if (!cell.classList.contains('cell-actions') &&
+                        cell.querySelectorAll('button, .btn, a.btn').length > 1) {
+                        cell.classList.add('cell-actions');
+                    }
+                    // An address or a comment is not readable in the sliver left
+                    // beside its label, so it drops onto its own line.
+                    if (!cell.classList.contains('cell-wide') &&
+                        cell.textContent.trim().length > 40) {
+                        cell.classList.add('cell-wide');
+                    }
+                });
+            });
+        });
+    }
+
+    labelTables(document);
+
+    if (!('MutationObserver' in window)) return;
+
+    let queued = false;
+    new MutationObserver(function() {
+        if (queued) return;
+        queued = true;
+        (window.requestAnimationFrame || setTimeout)(function() {
+            queued = false;
+            labelTables(document);
+        });
+    }).observe(document.body, { childList: true, subtree: true });
+}
 
 /**
  * Initialize sidebar toggle for mobile
@@ -36,6 +106,69 @@ function initSidebar() {
             }
         });
     }
+}
+
+/**
+ * Collapsible sidebar groups.
+ *
+ * The server already opens the group that owns the page you are on, so this is
+ * only about remembering what you additionally chose to open: the states are
+ * written to localStorage and replayed on the next page load, which is what
+ * keeps a menu from collapsing back every time you navigate. A group with no
+ * stored state keeps the server's answer.
+ *
+ * One delegated listener covers both carets and, for a group whose own page is
+ * not permitted, the whole parent row - anything carrying data-nav-toggle.
+ * Carets are siblings of the parent link rather than children of it, so a
+ * toggle never needs to cancel a navigation.
+ */
+function initSidebarNav() {
+    const KEY = 'pos.admin.navOpen';
+    const groups = [].slice.call(document.querySelectorAll('.nav-group[data-nav]'));
+    if (!groups.length) return;
+
+    let saved = {};
+    try {
+        saved = JSON.parse(localStorage.getItem(KEY) || '{}') || {};
+    } catch (e) {
+        saved = {};
+    }
+
+    function sync(group) {
+        const open = group.classList.contains('open');
+        group.querySelectorAll('[data-nav-toggle]').forEach(function (btn) {
+            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+    }
+
+    function persist() {
+        const state = {};
+        groups.forEach(function (group) {
+            state[group.getAttribute('data-nav')] = group.classList.contains('open') ? 1 : 0;
+        });
+        try {
+            localStorage.setItem(KEY, JSON.stringify(state));
+        } catch (e) {}
+    }
+
+    groups.forEach(function (group) {
+        const key = group.getAttribute('data-nav');
+        if (Object.prototype.hasOwnProperty.call(saved, key)) {
+            group.classList.toggle('open', !!saved[key]);
+        }
+        sync(group);
+    });
+
+    document.addEventListener('click', function (e) {
+        const btn = e.target.closest ? e.target.closest('[data-nav-toggle]') : null;
+        if (!btn) return;
+        e.preventDefault();
+        const group = btn.closest('.nav-group');
+        if (!group) return;
+        group.classList.toggle('open');
+        sync(group);
+        persist();
+    });
 }
 
 /**

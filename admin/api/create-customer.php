@@ -7,7 +7,6 @@
 header('Content-Type: application/json');
 require_once '../../config/db.php';
 require_once '../../config/marketing.php';
-require_once '../../config/wa_agent.php';
 startSecureSession();
 
 if (!isLoggedIn()) {
@@ -36,7 +35,7 @@ if (empty($name)) {
 // Stored in the international form - 8801712345678 - and it was stored exactly
 // as typed before, so the same customer could exist twice: once as 01712345678
 // from this screen and once as 8801712345678 from the Marketing page, which has
-// always normalised. One form means the WhatsApp check, the campaign audience and
+// always normalised. One form means the campaign audience and
 // the receipt link all agree on what the number is, and a search finds the
 // customer whichever way the number was typed.
 $phone = marketingNormalizePhone($rawPhone);
@@ -62,18 +61,6 @@ try {
         'address' => $address
     ], $currentUser['owner_id']);
 
-    // The WhatsApp check is deliberately NOT done here.
-    //
-    // It was, and it cost twenty seconds on every customer the cashier added: the
-    // bridge is on another machine, so the answer can only be waited for, and a
-    // shared host can cut a request that waits that long off before it answers -
-    // saving the customer with no badge and no explanation. The save returns at
-    // once and the POS asks api/customer-wa-check.php straight afterwards, so the
-    // cashier is never made to wait and a slow bridge cannot cost anything.
-    //
-    // The number still goes out in 880 form, which is what the check, the campaign
-    // audience and the receipt link all key on.
-
     $message = 'Customer created successfully';
     if (!empty($googleSync['success'])) {
         $message .= ' & synced to Google Contacts';
@@ -83,10 +70,6 @@ try {
         'success' => true,
         'message' => $message,
         'google_synced' => !empty($googleSync['success']),
-        // Null means "not checked yet", which is the truth at this moment. It is
-        // not 0: saying a brand new customer has no WhatsApp before anyone has
-        // asked is a guess dressed as an answer.
-        'has_whatsapp' => null,
         'customer' => [
             'id' => $newCustomerId,
             'name' => $name,

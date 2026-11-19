@@ -146,6 +146,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $salary = (float)($_POST['salary'] ?? 0);
         $salary_type = sanitize($_POST['salary_type'] ?? 'monthly');
         $status = sanitize($_POST['status'] ?? 'active');
+        $selected_store_id = (int)($_POST['store_id'] ?? 0);
+        $insert_store_id = $store_id ?: ($selected_store_id ?: null);
 
         if (empty($name)) {
             setFlash('danger', 'Staff name is required.');
@@ -173,11 +175,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                         $hashed = password_hash($password, PASSWORD_DEFAULT);
                         $stmt = $db->prepare("INSERT INTO users (name, email, password, role, store_id, status, owner_id) VALUES (?, ?, ?, 'staff', ?, ?, ?)");
-                        $stmt->execute([$name, $email, $hashed, $store_id, $status, $owner_id]);
+                        $stmt->execute([$name, $email, $hashed, $insert_store_id, $status, $owner_id]);
                         $userId = (int)$db->lastInsertId();
                     }
                     $stmt = $db->prepare("INSERT INTO staff (owner_id, store_id, name, phone, designation, salary, salary_type, status, email, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                    $stmt->execute([$owner_id, $store_id, $name, $phone ?: null, $designation ?: null, $salary, $salary_type, $status, $email ?: null, $userId]);
+                    $stmt->execute([$owner_id, $insert_store_id, $name, $phone ?: null, $designation ?: null, $salary, $salary_type, $status, $email ?: null, $userId]);
                     setFlash('success', 'Staff member added successfully!');
                 } else {
                     // Fetch existing staff to find linked user account
@@ -200,8 +202,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
 
                         // Update staff record
-                        $stmt = $db->prepare("UPDATE staff SET name=?, phone=?, designation=?, salary=?, salary_type=?, status=?, email=? WHERE id=? AND owner_id=?");
-                        $stmt->execute([$name, $phone ?: null, $designation ?: null, $salary, $salary_type, $status, $email ?: null, $id, $owner_id]);
+                        $stmt = $db->prepare("UPDATE staff SET name=?, phone=?, designation=?, salary=?, salary_type=?, status=?, email=?, store_id=? WHERE id=? AND owner_id=?");
+                        $stmt->execute([$name, $phone ?: null, $designation ?: null, $salary, $salary_type, $status, $email ?: null, $insert_store_id, $id, $owner_id]);
 
                         // Sync linked user account
                         if (!empty($email)) {
@@ -209,16 +211,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 if (!empty($password)) {
                                     $hashed = password_hash($password, PASSWORD_DEFAULT);
                                     $stmt = $db->prepare("UPDATE users SET name=?, email=?, password=?, status=?, store_id=? WHERE id=?");
-                                    $stmt->execute([$name, $email, $hashed, $status, $store_id, $userId]);
+                                    $stmt->execute([$name, $email, $hashed, $status, $insert_store_id, $userId]);
                                 } else {
                                     $stmt = $db->prepare("UPDATE users SET name=?, email=?, status=?, store_id=? WHERE id=?");
-                                    $stmt->execute([$name, $email, $status, $store_id, $userId]);
+                                    $stmt->execute([$name, $email, $status, $insert_store_id, $userId]);
                                 }
                             } else {
                                 // No user yet - create one
                                 $hashed = password_hash(!empty($password) ? $password : bin2hex(random_bytes(6)), PASSWORD_DEFAULT);
                                 $stmt = $db->prepare("INSERT INTO users (name, email, password, role, store_id, status, owner_id) VALUES (?, ?, ?, 'staff', ?, ?, ?)");
-                                $stmt->execute([$name, $email, $hashed, $store_id, $status, $owner_id]);
+                                $stmt->execute([$name, $email, $hashed, $insert_store_id, $status, $owner_id]);
                                 $db->prepare("UPDATE staff SET user_id = ? WHERE id = ?")->execute([(int)$db->lastInsertId(), $id]);
                             }
                         } elseif ($userId > 0) {
@@ -366,6 +368,14 @@ foreach ($staff as $m) {
     $paidPeriod = $m['salary_type'] === 'weekly' ? (float)$m['paid_week'] : (float)$m['paid_month'];
     $totalPaid += $paidPeriod;
     $totalDue += max(0, (float)$m['salary'] - $paidPeriod);
+}
+
+// Fetch stores for staff assignment dropdown
+$storesList = [];
+if (!$store_id) {
+    $stmt = $db->prepare("SELECT id, name FROM stores WHERE status = 'active' AND owner_id = ? ORDER BY name");
+    $stmt->execute([$owner_id]);
+    $storesList = $stmt->fetchAll();
 }
 
 include 'includes/header.php';
@@ -574,6 +584,18 @@ include 'includes/header.php';
                     <input type="text" name="name" id="staffName" class="form-control" required>
                 </div>
 
+                <?php if (!$store_id): ?>
+                <div class="form-group">
+                    <label class="form-label">Assign to Store</label>
+                    <select name="store_id" id="staffStoreId" class="form-control">
+                        <option value="">-- No Store --</option>
+                        <?php foreach ($storesList as $st): ?>
+                            <option value="<?php echo $st['id']; ?>"><?php echo sanitize($st['name']); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <?php endif; ?>
+
                 <div class="form-group">
                     <label class="form-label">Phone Number</label>
                     <input type="tel" name="phone" id="staffPhone" class="form-control" placeholder="01XXXXXXXXX">
@@ -662,7 +684,7 @@ include 'includes/header.php';
                     <hr style="margin: 0.75rem 0; border-color: var(--border-color,#e5e7eb);">
                     <p style="font-weight:600; margin-bottom:0.75rem; color: var(--text-secondary, #6b7280); font-size:0.85rem; text-transform:uppercase; letter-spacing:0.05em;">Salary Breakdown</p>
 
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+                    <div class="cols-2" style="gap:0.75rem;">
                         <div class="form-group" style="margin-bottom:0;">
                             <label class="form-label">Base Salary (per period)</label>
                             <input type="text" id="paySalaryBase" class="form-control" readonly
@@ -675,7 +697,7 @@ include 'includes/header.php';
                         </div>
                     </div>
 
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; margin-top:0.75rem;">
+                    <div class="cols-2" style="gap:0.75rem; margin-top:0.75rem;">
                         <div class="form-group" style="margin-bottom:0;">
                             <label class="form-label">Total Days in Month</label>
                             <input type="text" id="payTotalDays" class="form-control" readonly
@@ -694,7 +716,7 @@ include 'includes/header.php';
                                style="background:var(--bg-secondary,#f9fafb); font-weight:600; color: #059669;">
                     </div>
 
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+                    <div class="cols-2" style="gap:0.75rem;">
                         <div class="form-group" style="margin-bottom:0;">
                             <label class="form-label">Bonus (৳)</label>
                             <input type="number" name="bonus" id="payBonus" class="form-control"
@@ -709,7 +731,7 @@ include 'includes/header.php';
                         </div>
                     </div>
 
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; margin-top:0.75rem;">
+                    <div class="cols-2" style="gap:0.75rem; margin-top:0.75rem;">
                         <div class="form-group" style="margin-bottom:0;">
                             <label class="form-label">Already Paid This Period</label>
                             <input type="text" id="payPaid" class="form-control" readonly
@@ -786,6 +808,8 @@ include 'includes/header.php';
             document.getElementById('staffPasswordLabel').textContent = 'Login Password';
             document.getElementById('staffPassword').required = false;
             document.getElementById('staffPassword').placeholder = '';
+            var storeEl = document.getElementById('staffStoreId');
+            if(storeEl) storeEl.value = '';
             updateStaffLoginHint();
         } else {
             document.getElementById('staffId').value = member.id;
@@ -800,6 +824,8 @@ include 'includes/header.php';
             document.getElementById('staffStatus').value = member.status;
             document.getElementById('staffPasswordLabel').textContent = 'New Password (optional)';
             document.getElementById('staffPassword').placeholder = 'Leave blank to keep current';
+            var storeEl = document.getElementById('staffStoreId');
+            if(storeEl) storeEl.value = member.store_id || '';
             updateStaffLoginHint();
         }
         updateSalaryHint();

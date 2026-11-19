@@ -215,7 +215,7 @@ $gSettings = getGoogleContactsSettings($ownerId);
 
 <!-- Google People API (OAuth 2.0) - the only sync method -->
 <div>
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+    <div class="cols-2">
         
         <!-- Left: Instructions -->
         <div class="card">

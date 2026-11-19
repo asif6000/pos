@@ -1,0 +1,8 @@
+# Product images are data, not code. Never execute anything served from here.
+<FilesMatch "\.(?i:php|phtml|phar|php3|php4|php5|php7|pl|py|cgi|asp|aspx|sh)$">
+    Require all denied
+</FilesMatch>
+Options -Indexes -ExecCGI
+RemoveHandler .php .phtml .phar
+RemoveType .php .phtml .phar
+php_flag engine off

@@ -17,11 +17,10 @@
 --  Drift found by diffing a database built from pos_schema.sql against the
 --  database the application runs on (MariaDB 10.4.32):
 --
---    11 tables absent .... cashbook_entries, expense_categories,
---                          marketing_campaigns, marketing_recipients,
---                          product_variables, product_variable_values,
---                          product_variable_map, staff, staff_payments,
---                          whatsapp_contacts, whatsapp_messages
+--     9 tables absent ..... cashbook_entries, expense_categories,
+--                           marketing_campaigns, marketing_recipients,
+--                           product_variables, product_variable_values,
+--                           product_variable_map, staff, staff_payments
 --     1 column absent .... sales.printed
 --     1 column mistyped .. users.role was ENUM('owner','admin','manager','cashier')
 --     3 roles absent ..... owner, manager, staff
@@ -43,7 +42,7 @@
 --  This file is safe to run more than once: every statement checks before it
 --  writes. It only ever creates or widens. It never drops a table, never
 --  deletes a row, and never overwrites an existing setting value - so your
---  shop name, your SMS API key and your WhatsApp bridge token are safe.
+--  shop name and your SMS API key are safe.
 --
 --  Take a backup first. Importing into the wrong database is the one mistake
 --  this file cannot protect you from.
@@ -86,7 +85,7 @@ ALTER TABLE `sales`
 
 
 -- ----------------------------------------------------------------------------
--- 3. The 11 missing tables
+-- 3. The 9 missing tables
 --
 --    Definitions are taken verbatim from the database the application already
 --    runs against, so nothing about them is guesswork.
@@ -244,43 +243,6 @@ CREATE TABLE IF NOT EXISTS `staff_payments` (
   PRIMARY KEY (`id`),
   KEY `idx_staff` (`staff_id`),
   KEY `idx_date`  (`payment_date`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- 3.10 whatsapp_contacts
---      wa_last_at / wa_unread are the contact's own record; the messages table
---      holds the thread. wa_last_at is deliberately not called last_at - that
---      name is used as an alias for MAX(whatsapp_messages.created_at).
-CREATE TABLE IF NOT EXISTS `whatsapp_contacts` (
-  `id`         INT(11)      NOT NULL AUTO_INCREMENT,
-  `owner_id`   INT(11)      NOT NULL,
-  `chat_id`    VARCHAR(20)  NOT NULL,
-  `name`       VARCHAR(120) DEFAULT NULL,
-  `notify`     VARCHAR(120) DEFAULT NULL,
-  `username`   VARCHAR(60)  DEFAULT NULL,
-  `wa_last_at` DATETIME     DEFAULT NULL,
-  `wa_unread`  INT(11)      NOT NULL DEFAULT 0,
-  `source`     VARCHAR(10)  NOT NULL DEFAULT 'known',
-  `seen_at`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_owner_contact` (`owner_id`,`chat_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- 3.11 whatsapp_messages
-CREATE TABLE IF NOT EXISTS `whatsapp_messages` (
-  `id`             INT(11)     NOT NULL AUTO_INCREMENT,
-  `owner_id`       INT(11)     NOT NULL,
-  `chat_id`        VARCHAR(20) NOT NULL,
-  `direction`      ENUM('in','out') NOT NULL,
-  `body`           TEXT        DEFAULT NULL,
-  `has_media`      TINYINT(1)  NOT NULL DEFAULT 0,
-  `wa_message_id`  VARCHAR(90) DEFAULT NULL,
-  `is_revoked`     TINYINT(1)  NOT NULL DEFAULT 0,
-  `read_at`        TIMESTAMP   NULL DEFAULT NULL,
-  `created_at`     TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_owner_msg` (`owner_id`,`wa_message_id`),
-  KEY `idx_thread` (`owner_id`,`chat_id`,`id`),
-  KEY `idx_unread` (`owner_id`,`direction`,`read_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -457,14 +419,6 @@ SELECT 'auto_send_invoice', '0', NULL
 INSERT INTO `settings` (`setting_key`, `setting_value`, `owner_id`)
 SELECT 'invoice_send_sms', '0', NULL
   FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM `settings` WHERE `setting_key` = 'invoice_send_sms');
-
-INSERT INTO `settings` (`setting_key`, `setting_value`, `owner_id`)
-SELECT 'invoice_send_whatsapp', '0', NULL
-  FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM `settings` WHERE `setting_key` = 'invoice_send_whatsapp');
-
-INSERT INTO `settings` (`setting_key`, `setting_value`, `owner_id`)
-SELECT 'invoice_sms_whatsapp_only', '0', NULL
-  FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM `settings` WHERE `setting_key` = 'invoice_sms_whatsapp_only');
 
 -- Receipt wording. A missing voucher_terms row is what made the invoice fall
 -- back to a hardcoded default in process-sale.php.

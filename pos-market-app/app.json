@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "Smart POS Marketplace",
+    "slug": "pos-market-app",
+    "version": "1.0.3",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.avaitsolution.posmarket",
+      "versionCode": 4,
+      "usesCleartextTraffic": true,
+      "adaptiveIcon": {
+        "backgroundColor": "#F5F9FF",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "backgroundColor": "#1B5CFF",
+          "imageWidth": 180,
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-font"
+    ],
+    "owner": "smart209s-team",
+    "extra": {
+      "eas": {
+        "projectId": "0d940d4e-9f7a-4abf-b1b2-ee25930d9c08"
+      }
+    }
+  }
+}

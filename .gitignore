@@ -4,22 +4,21 @@
 /config/db.php
 *.env
 !*.env.example
-whatsapp-server/auth*
-whatsapp-server/session/
-whatsapp-server/.wwebjs_cache/
-/_whatsappweb-backup/
-login-qr.png
-qr-latest.png
-
 # ==========================================
 # RUNTIME / GENERATED FILES
 # ==========================================
 /sessions/
+/sessions_mobile/
 /uploads/
 *.log
 admin/error_log
-whatsapp-server/*.log
-whatsapp-server/invoice-render-test.png
+
+# Large local artifacts that should not live in the repo
+/admin.zip
+/downloads/
+
+# Separate Expo app with its own (uninitialised) git repo
+/pos-staff-app/
 
 # Local-only database dumps (contain real shop data)
 /oznfsceg_smart.sql

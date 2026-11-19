@@ -92,6 +92,18 @@ include 'includes/header.php';
 <!-- Sales Table -->
 <div class="card">
     <div class="card-body" style="padding: 0;">
+        <!-- Printed / not-printed row states: red until printed, green after.
+     Scoped through .table tbody so it beats the shared hover rule. -->
+        <style>
+            .table tbody tr.sale-unprinted { background: #fef2f2; }
+            .table tbody tr.sale-unprinted:hover { background: #fee2e2; }
+            .table tbody tr.sale-printed { background: #f0fdf4; }
+            .table tbody tr.sale-printed:hover { background: #dcfce7; }
+            .print-dot { font-size: 0.5rem; vertical-align: middle; margin-left: 4px; }
+            .table tbody tr.sale-unprinted .print-dot { color: #ef4444; }
+            .table tbody tr.sale-printed .print-dot { color: #22c55e; }
+        </style>
+
         <table class="table">
             <thead>
                 <tr>
@@ -110,12 +122,12 @@ include 'includes/header.php';
                     <tr><td colspan="7" class="text-center text-muted">No sales found</td></tr>
                 <?php else: ?>
                     <?php foreach ($sales as $sale): ?>
-                        <tr data-sale-id="<?php echo $sale['id']; ?>" style="background: <?php echo $sale['printed'] ? '#f0fdf4' : ''; ?>">
+                        <tr data-sale-id="<?php echo $sale['id']; ?>" class="<?php echo $sale['printed'] ? 'sale-printed' : 'sale-unprinted'; ?>">
                             <td><strong><?php echo sanitize($sale['invoice_number']); ?>
                                         <?php if (!$sale['printed']): ?>
-                                            <i class="fas fa-circle print-dot" style="color: #ef4444; font-size: 0.5rem; vertical-align: middle;" title="Not Printed"></i>
+                                            <i class="fas fa-circle print-dot" title="Not Printed"></i>
                                         <?php else: ?>
-                                            <i class="fas fa-circle print-dot" style="color: #22c55e; font-size: 0.5rem; vertical-align: middle;" title="Printed"></i>
+                                            <i class="fas fa-circle print-dot" title="Printed"></i>
                                         <?php endif; ?></strong></td>
                             <td><?php echo date('h:i A', strtotime($sale['created_at'])); ?></td>
                             <td><?php echo sanitize($sale['customer_name'] ?? 'Walk-in'); ?></td>
@@ -170,6 +182,7 @@ include 'includes/header.php';
 </div>
 
 <script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/qrcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
 <script>
     let currentPrintSaleId = null;
 
@@ -182,9 +195,10 @@ include 'includes/header.php';
             }).then(() => {
                 const row = document.querySelector(`tr[data-sale-id="${currentPrintSaleId}"]`);
                 if (row) {
-                    row.style.background = '#f0fdf4';
+                    row.classList.remove('sale-unprinted');
+                    row.classList.add('sale-printed');
                     const dot = row.querySelector('.print-dot');
-                    if (dot) { dot.style.color = '#22c55e'; dot.title = 'Printed'; }
+                    if (dot) dot.title = 'Printed';
                 }
             });
             currentPrintSaleId = null;
@@ -204,6 +218,28 @@ include 'includes/header.php';
             }
         } catch (error) {
             document.getElementById('invoiceContent').innerHTML = '<p class="text-danger">Error loading invoice</p>';
+        }
+    }
+
+    /**
+     * The coupon QR, drawn in the page as an inline SVG.
+     *
+     * It used to be an <img> pointing at api.qrserver.com, which left an empty
+     * box wherever that request did not finish in time: a print preview that
+     * snapshots the page straight away, or a shop PC with no internet at all.
+     * Drawing it here means the preview, the printout and the slip all carry
+     * the same code and none of them need the network.
+     */
+    function couponQrSvg(url, size) {
+        if (!url || typeof qrcode === 'undefined') return '';
+        try {
+            const qr = qrcode(0, 'M');
+            qr.addData(url);
+            qr.make();
+            return qr.createSvgTag({ cellSize: 4, margin: 1, scalable: true })
+                .replace('<svg ', '<svg style="width:' + size + 'px;height:' + size + 'px;" ');
+        } catch (e) {
+            return '';
         }
     }
 
@@ -254,6 +290,9 @@ include 'includes/header.php';
         const shopEmail = invoice.shop_email || 'info@vouser.com'; 
         const shopWeb = invoice.shop_website || 'www.vouser.com';
         const facebookUrl = invoice.facebook_page || 'https://www.facebook.com';
+        // Controlled from Settings > Invoice. Defaults to on when absent, which
+        // is how the receipt behaved before the setting existed.
+        const showQr = invoice.show_qr !== false;
 
         document.getElementById('invoiceContent').innerHTML = `
         <style>
@@ -271,10 +310,6 @@ include 'includes/header.php';
                         <h2 style="margin: 0; font-size: 1.5rem; font-weight: 700; color: #111827;">${shopName}</h2>
                         <p style="margin: 0; color: #4f46e5; font-size: 0.875rem; font-weight: 500;">Shopping</p>
                     </div>
-                </div>
-                <div style="text-align: center;">
-                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=${encodeURIComponent(facebookUrl)}" alt="Facebook QR" style="width: 80px; height: 80px; border-radius: 4px;" />
-                    <p style="margin: 4px 0 0 0; font-size: 0.65rem; color: #4b5563; font-weight: 600;">Scan for Facebook</p>
                 </div>
                 <div style="text-align: center; margin-top: 0.5rem;">
                     <svg id="invoiceReturnBarcode" data-barcode="${invoice.invoice_number}"></svg>
@@ -405,10 +440,6 @@ include 'includes/header.php';
             </div>
             ` : ''}
 
-            <div style="text-align: left; margin-top: 10px; border-top: 1px dashed #000; padding-top: 8px; color: #000; font-size: 0.75rem;">
-                <p style="margin: 0 0 4px 0; font-size: 0.8rem; font-weight: bold;">পণ্য পরিবর্তন নীতি</p>
-                <p style="margin: 0; white-space: pre-line;">ক্রয়ের তারিখ থেকে ৭ দিনের মধ্যে পণ্য পরিবর্তন করা যাবে।\nপণ্যটি অবশ্যই অব্যবহৃত, অরিজিনাল এবং রসিদসহ হতে হবে।\nকোনো নগদ টাকা ফেরত দেওয়া হবে না।\nপণ্য পরিবর্তন পণ্যের প্রাপ্যতা ও দোকানের নীতিমালার ওপর নির্ভরশীল।</p>
-            </div>
             </div>
             
             ${invoice.coupon_status == '1' ? `
@@ -420,7 +451,7 @@ include 'includes/header.php';
                             <p style="text-align: left; margin: 0; font-size: 11px; font-weight: bold;">${invoice.coupon_subtitle}</p>
                         </div>
                         <div style="text-align: right; width: 60px;">
-                            <img src="https://api.qrserver.com/v1/create-qr-code/?size=60x60&data=${encodeURIComponent(facebookUrl)}" alt="Facebook QR" style="width: 50px; height: 50px; border-radius: 4px;" />
+                            ${showQr ? couponQrSvg(facebookUrl, 50) : ''}
                         </div>
                     </div>
 
@@ -491,25 +522,7 @@ include 'includes/header.php';
         if (!content) return;
         
         let printHTML = content.innerHTML;
-        
-        // Pre-fetch all QR images as base64 data URIs
-        const qrMatches = printHTML.match(/src="(https:\/\/api\.qrserver\.com[^"]+)"/g);
-        if (qrMatches) {
-            for (const match of qrMatches) {
-                const url = match.match(/src="([^"]+)"/)[1];
-                try {
-                    const resp = await fetch(url);
-                    const blob = await resp.blob();
-                    const base64 = await new Promise((resolve) => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => resolve(reader.result);
-                        reader.readAsDataURL(blob);
-                    });
-                    printHTML = printHTML.replace(url, base64);
-                } catch(e) {}
-            }
-        }
-        
+
         const printWindow = window.open('', '_blank');
         printWindow.document.write(`
         <html>

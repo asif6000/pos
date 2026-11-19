@@ -13,6 +13,7 @@ if (!isLoggedIn()) {
 define('PAGE_TITLE', 'Customer History');
 
 $db = getDB();
+$user = getCurrentUser();
 
 $customerId = (int)($_GET['id'] ?? 0);
 
@@ -21,24 +22,40 @@ if (!$customerId) {
 }
 
 // Get customer details
-$stmt = $db->prepare("SELECT * FROM customers WHERE id = ?");
-$stmt->execute([$customerId]);
+// Customer names, numbers and what they bought belong to the shop that added
+// them, so the id from the URL is read inside that shop only.
+$stmt = $db->prepare("SELECT * FROM customers WHERE id = ? AND owner_id = ?");
+$stmt->execute([$customerId, $user['owner_id']]);
 $customer = $stmt->fetch();
 
 if (!$customer) {
     redirect('customers.php');
 }
 
+// A counter account (staff/cashier) opens a customer's history only when that
+// customer bought from THEM - the customers list it came from shows exactly
+// those, so a hand-typed id cannot reach a colleague's customer.
+list($ownScope, $ownParams) = ownSalesScopeSql($user, 's');
+if (!empty($ownScope)) {
+    $stmt = $db->prepare("SELECT 1 FROM sales WHERE customer_id = ? AND user_id = ? LIMIT 1");
+    $stmt->execute([$customerId, (int) $user['id']]);
+    if (!$stmt->fetch()) {
+        redirect('customers.php');
+    }
+}
+
 // Get customer's purchase history
+// The counter account's history lists its own bills with this customer, so the
+// totals underneath answer for the same rows the table shows.
 $stmt = $db->prepare("
     SELECT s.*, u.name as cashier_name,
     (SELECT SUM(quantity) FROM sale_items WHERE sale_id = s.id) as item_count
     FROM sales s
     LEFT JOIN users u ON s.user_id = u.id
-    WHERE s.customer_id = ?
+    WHERE s.customer_id = ? AND " . saleOwnerScopeSql($user['owner_id'], 's', 'u') . "$ownScope
     ORDER BY s.created_at DESC
 ");
-$stmt->execute([$customerId]);
+$stmt->execute(array_merge([$customerId, $user['owner_id'], $user['owner_id']], $ownParams));
 $purchases = $stmt->fetchAll();
 
 // Calculate stats
@@ -81,7 +98,7 @@ include 'includes/header.php';
 </div>
 
 <!-- Stats -->
-<div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
+<div class="stats-grid">
     <div class="stat-card">
         <div class="stat-icon green">
             <i class="fas fa-money-bill-wave"></i>

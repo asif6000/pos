@@ -1,10 +1,11 @@
 <?php
 /**
- * POS System - Marketing (WhatsApp + SMS)
+ * POS System - Marketing (SMS campaigns)
  *
- * One screen for both channels:
- *   WhatsApp  linked to the shop's own number by QR code (WhatsApp Web)
- *   SMS       a local bulk gateway, or handed to the phone's SMS app
+ * Campaigns leave as SMS, through the shop's own bulk gateway or, with no gateway
+ * set, handed to the phone's SMS app. Nothing is sold in packs any more: the strip
+ * at the top counts what went out, read from the same log the SMS Service page
+ * lists, and shows the credit the gateway still has for this shop.
  *
  * Recipients always come from the customer list.
  */
@@ -12,6 +13,7 @@
 require_once '../config/db.php';
 require_once '../config/marketing.php';
 require_once '../config/sms_gateway.php';
+require_once '../config/sms_usage.php';
 startSecureSession();
 
 if (!isLoggedIn()) {
@@ -35,14 +37,24 @@ $user    = getCurrentUser();
 $ownerId = $user['owner_id'] ?? $user['id'];
 $sms     = getSmsSettings($ownerId);
 
-// Only used to render the live preview, so a blank sender name is fine
-$shopName = trim(getMarketingSettings($ownerId)['marketing_sender_name'] ?? '');
+// Only used to render the live preview, so a blank sender name is fine — but it
+// has to be resolved exactly the way the send resolves it, or the preview shows
+// a shop name the customer never receives (or the other way round).
+$shopName = marketingShopName($ownerId, $sms);
 
-// Link state of the shop's own personal WhatsApp number, so the connect card
-// below can say something true before any JavaScript runs. The status poll in
-// marketing.js takes it from there, but a card that rendered blank for its
-// first few seconds would look broken on a shop PC.
-$bridge = marketingGetBridgeStatus($ownerId);
+// What this shop has already sent, so the page can answer "koto SMS geche"
+// without a second trip to the SMS Service page. Counted straight from sms_logs.
+// The gateway's remaining credit is NOT read here: that needs an HTTP call with
+// the shop's API key, which would hold up this page and must not be made from the
+// browser, so api/sms-balance.php does it after render.
+smsUsageEnsureTables($db);
+$usage = smsUsageStats($db, $ownerId);
+
+// Manual mode means there is no gateway: the compose box hands the text to the
+// phone's SMS app instead. Saying so on the button is what stops a shopkeeper
+// waiting for a send that was never going to leave the server.
+$smsProvider = (string)(getSmsSettings($ownerId)['marketing_sms_provider'] ?? 'manual');
+$smsIsManual = ($smsProvider === 'manual');
 
 // Last 5 campaigns for the history strip
 $recentStmt = $db->prepare("SELECT id, channel, name, status, total, sent_count, failed_count, created_at
@@ -83,154 +95,61 @@ $flash = getFlash();
     </div>
 <?php endif; ?>
 
-<!-- WhatsApp connect.
-
-     The shop links its own personal number here, by scanning the login QR from
-     phone er WhatsApp > Linked devices. This card is what the JS in
-     marketing.js has always driven: it looks for #mkWaLinkCard, its
-     data-wa-ready flag, #mkWaStatusText, #mkWaOfflineNote, #mkWaQrSlot and the
-     two buttons, and it polls api/marketing-status.php every five seconds to
-     swap the code as WhatsApp rotates it. Only the markup was missing, so this
-     restores it rather than adding a second, parallel implementation.
-
-     Placed above .mk-layout on purpose: full width, so the QR is not squeezed
-     into the compose column. Campaigns still go out as SMS - the link says so
-     - but the link itself belongs on the page that explains the channel.
-
-     data-wa-ready is the one value a status poll cannot supply, because "this
-     shop has never entered a bridge URL" is a setup state and not a connection
-     one. Left at 1 it would be overwritten with "not connected" a few seconds
-     after load, pointing the shop at a QR that is never going to arrive. -->
-<div class="card mk-card wi-link <?php echo $bridge['connected'] ? 'is-linked' : 'is-offline'; ?>"
-     id="mkWaLinkCard"
-     data-wa-ready="<?php echo !empty($bridge['configured']) ? '1' : '0'; ?>">
-    <div class="card-body">
-        <div class="wi-link-row">
-            <div class="wi-link-state">
-                <span class="wi-dot"></span>
-                <div>
-                    <strong id="mkWaStatusText">
-                        <?php
-                        if ($bridge['connected']) {
-                            echo 'Connected';
-                        } elseif (empty($bridge['configured'])) {
-                            echo 'WhatsApp is not set up';
-                        } else {
-                            echo 'WhatsApp is not connected';
-                        }
-                        ?>
-                    </strong>
-                    <div class="wi-setup-foot-note" id="mkWaStatusSub">
-                        <?php if ($bridge['connected']): ?>
-                            <?php
-                            // The number WhatsApp reports for the linked device.
-                            // me.id is the JID (…@c.us), which is not something to
-                            // read aloud over the counter, so the digits are shown
-                            // in the usual 01XXX-XXXXXX form.
-                            $meDigits = (string)($bridge['me']['id'] ?? '');
-                            $meNumber = marketingFormatPhone(preg_replace('/@.*$/', '', $meDigits));
-                            ?>
-                            Apnar WhatsApp number<?php
-                            echo $meNumber !== '' ? ': <strong>' . htmlspecialchars($meNumber) . '</strong>' : ' link hoye geche';
-                            ?>.
-                        <?php elseif (empty($bridge['configured'])): ?>
-                            Bridge URL ar API token ekhono dewa hoye ni &mdash; Settings &rarr;
-                            WhatsApp Bridge e dei.
-                        <?php else: ?>
-                            Apnar personal number link korte QR scan korte hobe.
-                        <?php endif; ?>
-                    </div>
-                </div>
+<!-- What has already gone out, and what the gateway still has left. The count is
+     read from the same log the SMS Service page lists; the balance chip starts
+     empty and is filled by api/sms-balance.php once that call answers. -->
+<section class="mk-usage">
+    <div class="mk-usage-main">
+        <span class="mk-usage-ico"><i class="fas fa-comment-sms"></i></span>
+        <div>
+            <div class="mk-usage-kicker">Mot SMS pathano</div>
+            <div class="mk-usage-total">
+                <?php echo number_format($usage['sent']); ?><span>SMS</span>
             </div>
-
-            <div class="wi-link-actions">
-                <a href="whatsapp-inbox.php" class="btn btn-sm btn-outline">
-                    <i class="fab fa-whatsapp"></i> Inbox
-                </a>
-                <button type="button" class="btn btn-sm btn-outline" id="mkWaRefreshBtn"
-                        title="Reload connection state">
-                    <i class="fas fa-rotate"></i>
-                </button>
-                <!-- Unlink and wait for a new code. Routed through
-                     marketingBridgeCommand(), so it also works in agent mode where
-                     there is no bridge URL to call. -->
-                <button type="button" class="btn btn-sm btn-outline" id="mkWaUnlinkBtn"
-                        title="Unlink this number and show a new QR">
-                    <i class="fas fa-qrcode"></i> Remove QR
-                </button>
+            <div class="mk-usage-note">
+                Kono package kinte hoy na &mdash; gateway theke direct jay,
+                ekhane shudhu count hoy.
             </div>
-        </div>
-
-        <!-- Why there is no code on screen. Two different problems, and the fix
-             is in a different place for each: a shop that has never configured a
-             bridge has to fill the form in, whereas a configured bridge that is
-             not answering is waiting on the shop's own computer. Saying which one
-             this is, is what data-wa-ready above preserves. -->
-        <?php if (!$bridge['connected'] && empty($bridge['qr'])
-                  && (!($bridge['ok'] ?? false) || !empty($bridge['error']) || empty($bridge['configured']))): ?>
-            <div class="wi-offline-note<?php echo empty($bridge['configured']) ? '' : ' is-error'; ?>"
-                 id="mkWaOfflineNote">
-                <i class="fas fa-triangle-exclamation"></i>
-                <div>
-                    <strong>
-                        <?php if (empty($bridge['configured'])): ?>
-                            Bridge URL ba API token ekhono dewa hoye ni.
-                            <a href="settings.php">Settings &rarr; WhatsApp Bridge</a> e dei
-                            &mdash; tarpor ei QR ta ashe.
-                        <?php else: ?>
-                            <?php echo htmlspecialchars($bridge['error'] ?: 'WhatsApp bridge chalu nai.'); ?>
-                        <?php endif; ?>
-                    </strong>
-                    <?php if (!empty($bridge['hint'])): ?>
-                        <div><?php echo htmlspecialchars($bridge['hint']); ?></div>
-                    <?php endif; ?>
-                </div>
-            </div>
-        <?php endif; ?>
-
-        <!-- The slot is always rendered, empty or not: the status poll builds the
-             panel itself when a code arrives after page load, which is exactly
-             what an unlink does, and it needs a container to land in. -->
-        <div id="mkWaQrSlot">
-            <?php if (!$bridge['connected'] && !empty($bridge['qr'])): ?>
-                <div class="wi-qr-panel" id="mkWaQrPanel">
-                    <img src="<?php echo htmlspecialchars($bridge['qr']); ?>"
-                         alt="WhatsApp login QR code" class="wi-qr-img" id="mkWaQrImg">
-                    <div class="wi-qr-cap">
-                        Phone er WhatsApp e <strong>Linked devices</strong> kholo, ei QR ta scan korun
-                        &mdash; apnar personal number ei link hobe. Code ta prai ek minute por naya hoy,
-                        screen e ja ase setai scan korun.
-                    </div>
-                </div>
-            <?php endif; ?>
         </div>
     </div>
-</div>
+    <div class="mk-usage-stats">
+        <div class="mk-usage-stat mk-balance" id="mkBalance" data-state="load">
+            <small>SMS Balance</small>
+            <strong id="mkBalanceValue">&hellip;</strong>
+        </div>
+        <button type="button" class="mk-balance-refresh" id="mkBalanceRefresh"
+                title="Gateway theke abar balance jante nin" aria-label="Refresh SMS balance">
+            <i class="fas fa-rotate-right"></i>
+        </button>
+        <div class="mk-usage-stat">
+            <small>Aj</small><strong><?php echo number_format($usage['today']); ?></strong>
+        </div>
+        <div class="mk-usage-stat">
+            <small>Ei mash</small><strong><?php echo number_format($usage['month']); ?></strong>
+        </div>
+        <div class="mk-usage-stat">
+            <small>Fail</small><strong><?php echo number_format($usage['failed']); ?></strong>
+        </div>
+        <a class="mk-usage-link" href="sms-service.php">
+            Sob history <i class="fas fa-arrow-right"></i>
+        </a>
+    </div>
+</section>
 
-<!-- Channel: SMS only.
-     Campaigns go out as SMS, so the channel choice stays a single button.
-     The WhatsApp option is not a channel here; the card above is the link, and
-     sending itself lives in the inbox. -->
+<!-- Channel: SMS only. Campaigns go out as SMS. -->
 <div class="mk-channels">
     <button type="button" class="mk-channel active" data-channel="sms"
             data-sms-provider="<?php echo htmlspecialchars($sms['marketing_sms_provider']); ?>">
         <span class="mk-channel-icon" style="background:#4F46E5"><i class="fas fa-comment-sms"></i></span>
         <span class="mk-channel-text">
             <strong>SMS</strong>
-            <small id="mkSmsModeHint">Bulk gateway or phone app</small>
+            <small id="mkSmsModeHint"><?php echo $smsIsManual
+                ? 'Gateway set kora nai — phone er SMS app theke jabe'
+                : 'Gateway theke direct pathano hoy'; ?></small>
         </span>
         <i class="fas fa-check mk-channel-check"></i>
     </button>
 </div>
-
-<!-- The inbox link, because that is the page WhatsApp is read and answered on.
-     The card above links the number; the campaign itself still goes out as SMS. -->
-<p class="mk-inbox-link">
-    <a href="whatsapp-inbox.php" class="btn btn-sm btn-success">
-        <i class="fab fa-whatsapp"></i> WhatsApp chat inbox
-    </a>
-    <span>WhatsApp e pathate hole inbox e jano &mdash; campaign ekhoni SMS e jay.</span>
-</p>
 
 <div class="mk-layout">
 
@@ -321,44 +240,38 @@ $flash = getFlash();
                 <div class="card-title"><i class="fas fa-user-group"></i> Recipients</div>
                 <div class="d-flex gap-2 flex-wrap">
                     <span class="badge badge-primary" id="mkSelectedCount">0 selected</span>
-                    <button type="button" class="btn btn-sm btn-whatsapp" id="mkAddContactsBtn"
-                            title="QR diye number guloy phone e add korun">
-                        <i class="fas fa-qrcode"></i> Add to WhatsApp
+
+                    <!-- Ten at a time. "Select all" on a list of three hundred
+                         hands the campaign three hundred numbers nobody read
+                         before the messages went out, so the default way
+                         through a list is to walk it ten rows at a time.
+                         Back exists because stepping without an undo is not
+                         stepping, it is committing. -->
+                    <div class="mk-batch">
+                        <button type="button" class="btn btn-sm btn-outline" id="mkBatchPrevBtn"
+                                title="Shesh batch-ta wapas selection theke remove korun" disabled>
+                            <i class="fas fa-chevron-left"></i> Back
+                        </button>
+                        <button type="button" class="btn btn-sm btn-primary" id="mkBatchNextBtn"
+                                title="Ei list e ar 10 ta number select korun">
+                            Next 10<i class="fas fa-chevron-right"></i>
+                        </button>
+                    </div>
+
+                    <!-- "Select all" only reaches the rows the filters left on
+                         screen, which is not the same as the header's Total. A
+                         shop with 300 customers who has ticked "only inactive"
+                         would otherwise have no way to say "everyone". -->
+                    <button type="button" class="btn btn-sm btn-outline" id="mkSelectTotalBtn"
+                            title="Filter/search jeno ki na keno, phone number ache emon shob customer select korun">
+                        Select total (<span id="mkTotalCount">0</span>)
                     </button>
-                    <button type="button" class="btn btn-sm btn-outline" id="mkSelectAllBtn">Select all</button>
+                    <button type="button" class="btn btn-sm btn-outline" id="mkSelectAllBtn"
+                            title="Shudhu ekhon list e dekhano gulo select korun">Select all on screen</button>
                     <button type="button" class="btn btn-sm btn-outline" id="mkSelectNoneBtn">Clear</button>
                 </div>
             </div>
             <div class="card-body">
-                <!-- WhatsApp availability of the saved numbers. The numbers come
-                     from POS sales, so plenty of them will never receive a
-                     message; this says which before the shopkeeper commits. -->
-                <div class="mk-wa-bar" id="mkWaBar">
-                    <div class="mk-wa-bar-left">
-                        <i class="fab fa-whatsapp"></i>
-                        <span id="mkWaCount">WhatsApp status porjonto check hoy nai</span>
-                    </div>
-                    <div class="mk-wa-bar-right">
-                        <span class="mk-live" id="mkLiveBadge"><span class="mk-live-dot"></span><span>Live</span></span>
-                        <button type="button" class="btn btn-sm btn-whatsapp" id="mkSyncBtn">
-                            <i class="fas fa-rotate"></i> <span id="mkSyncLabel">Check numbers</span>
-                        </button>
-                        <button type="button" class="btn btn-sm btn-outline d-none" id="mkSyncStopBtn">
-                            <i class="fas fa-xmark"></i> Stop
-                        </button>
-                    </div>
-                </div>
-                <div class="mk-sync-progress d-none" id="mkSyncProgress">
-                    <div class="mk-progress-bar"><div class="mk-progress-fill" id="mkSyncFill"></div></div>
-                    <div class="mk-progress-text" id="mkSyncText">Checking…</div>
-                </div>
-
-                <!-- The count the shopkeeper is asking about, answered rather
-                     than left to be inferred: customers and recipients are two
-                     different quantities, and the gap between them is a
-                     campaign history, not missing data. -->
-                <div class="mk-wa-note" id="mkWaNote"></div>
-
                 <div class="mk-filters">
                     <input type="text" class="form-control" id="mkSearch"
                         placeholder="Search name or phone…">
@@ -370,10 +283,6 @@ $flash = getFlash();
                             <option value="90" selected>90+ days</option>
                             <option value="180">180+ days</option>
                         </select>)
-                    </label>
-                    <label class="mk-check mk-check-wa" id="mkShowUnverifiedWrap">
-                        <input type="checkbox" id="mkShowUnverified">
-                        <i class="fab fa-whatsapp"></i> Also show unconfirmed
                     </label>
                 </div>
 
@@ -396,6 +305,11 @@ $flash = getFlash();
                         </tbody>
                     </table>
                 </div>
+
+                <!-- How far through the list Next has got, said plainly. A
+                     button that silently does nothing on the last batch reads
+                     as a broken page rather than as the end of the list. -->
+                <div class="mk-batch-note" id="mkBatchNote"></div>
             </div>
         </div>
 
@@ -422,247 +336,8 @@ $flash = getFlash();
         </div>
     </div>
 
-    <!-- ── Right column: SMS gateway + history ──────────────────────────────── -->
+    <!-- ── Right column: campaign history ─────────────────────────────────── -->
     <aside class="mk-side">
-
-        <!-- SMS gateway settings -->
-        <div class="card mk-card mk-gateway">
-            <div class="card-header">
-                <div class="card-title"><i class="fas fa-comment-sms"></i> SMS Gateway</div>
-                <span class="badge" id="mkGatewayBadge">Checking…</span>
-            </div>
-
-            <!-- Provider tiles -->
-            <div class="card-body mk-gb-top">
-                <div class="mk-providers" id="mkProviders">
-                    <?php foreach (getSmsProviders() as $key => $p): ?>
-                        <button type="button" class="mk-provider<?php echo $sms['marketing_sms_provider'] === $key ? ' is-on' : ''; ?>"
-                            data-provider="<?php echo $key; ?>">
-                            <span class="mk-provider-dot mk-dot-<?php echo $key; ?>"></span>
-                            <span class="mk-provider-body">
-                                <span class="mk-provider-name"><?php echo htmlspecialchars($p['label']); ?></span>
-                                <span class="mk-provider-hint"><?php echo htmlspecialchars($p['hint']); ?></span>
-                            </span>
-                            <i class="fas fa-check mk-provider-tick"></i>
-                        </button>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-
-            <!-- Gateway config, only for a real provider -->
-            <div class="mk-gb-body" id="mkSmsGatewayBox">
-                <div class="card-body">
-
-                    <!-- API key -->
-                    <div class="mk-field">
-                        <div class="mk-label-row">
-                            <label class="mk-label" for="mkSmsApiKey">
-                                <i class="fas fa-key mk-label-ico"></i> API key
-                            </label>
-                            <span class="mk-key-status<?php echo trim($sms['marketing_sms_api_key']) !== '' ? ' is-set' : ''; ?>"
-                                id="mkKeyStatus">
-                                <span class="mk-key-dot"></span>
-                                <span id="mkKeyStatusText"><?php echo trim($sms['marketing_sms_api_key']) !== '' ? 'Saved' : 'Not set'; ?></span>
-                            </span>
-                        </div>
-                        <div class="mk-secret">
-                            <i class="fas fa-lock mk-secret-icon"></i>
-                            <input type="password" class="form-control mk-mono" id="mkSmsApiKey"
-                                value="<?php echo htmlspecialchars($sms['marketing_sms_api_key']); ?>"
-                                placeholder="Paste your provider API key"
-                                autocomplete="off" spellcheck="false"
-                                aria-describedby="mkKeyNote">
-                            <button type="button" class="mk-secret-btn" data-secret="reveal" data-target="mkSmsApiKey"
-                                title="Show / hide" aria-label="Show API key" aria-pressed="false">
-                                <i class="fas fa-eye"></i>
-                            </button>
-                            <button type="button" class="mk-secret-btn" data-secret="copy" data-target="mkSmsApiKey"
-                                title="Copy key" aria-label="Copy API key">
-                                <i class="fas fa-copy"></i>
-                            </button>
-                        </div>
-                        <div class="mk-note" id="mkKeyNote">
-                            <i class="fas fa-shield-alt mk-note-ico"></i>
-                            Provider site e <strong>My Profile → API KEY</strong> theke nijer key ta nijei paste korun —
-                            database e encrypt kore rakha hoy.
-                        </div>
-                    </div>
-
-                    <!-- Endpoint URLs -->
-                    <div class="mk-field">
-                        <div class="mk-label-row">
-                            <span class="mk-label">Endpoint URL</span>
-                            <span class="mk-label-tip">Provider jodi GET bole shudhu GET, POST bole shudhu POST boshai den</span>
-                        </div>
-
-                        <div class="mk-endpoint">
-                            <span class="mk-method mk-method-get">GET</span>
-                            <input type="text" class="form-control mk-url" id="mkSmsGetUrl"
-                                value="<?php echo htmlspecialchars($sms['marketing_sms_get_url']); ?>"
-                                placeholder="https://provider.com/api/send?api_key={apikey}&to={number}&msg={message}"
-                                spellcheck="false" autocomplete="off">
-                            <button type="button" class="mk-endpoint-test" data-test="get" title="Test this URL">
-                                <i class="fas fa-play"></i>
-                            </button>
-                        </div>
-                        <div class="mk-result" id="mkGetResult"></div>
-
-                        <div class="mk-endpoint">
-                            <span class="mk-method mk-method-post">POST</span>
-                            <input type="text" class="form-control mk-url" id="mkSmsPostUrl"
-                                value="<?php echo htmlspecialchars($sms['marketing_sms_post_url']); ?>"
-                                placeholder="https://provider.com/api/send?api_key={apikey}&to={number}&msg={message}"
-                                spellcheck="false" autocomplete="off">
-                            <button type="button" class="mk-endpoint-test" data-test="post" title="Test this URL">
-                                <i class="fas fa-play"></i>
-                            </button>
-                        </div>
-                        <div class="mk-result" id="mkPostResult"></div>
-                    </div>
-
-                    <!-- Sender ID -->
-                    <div class="mk-field">
-                        <div class="mk-label-row">
-                            <label class="mk-label" for="mkSmsSenderId">
-                                <i class="fas fa-signature mk-label-ico"></i> Sender ID
-                            </label>
-                            <span class="mk-label-tip">Provider jodi mask/sender ID chaite bole, eta oboshun</span>
-                        </div>
-                        <input type="text" class="form-control mk-mono" id="mkSmsSenderId"
-                            value="<?php echo htmlspecialchars($sms['marketing_sms_sender_id']); ?>"
-                            placeholder="SHOPNAME"
-                            spellcheck="false" autocomplete="off">
-                        <div class="mk-note" id="mkSenderIdNote">
-                            <i class="fas fa-info-circle mk-note-ico"></i>
-                            Provider er documentation e jodi URL e <code>{senderid}</code> thake,
-                            tokhon ei box e apnar registered sender ID ta like URL ta bosiye den.
-                        </div>
-                    </div>
-
-                    <!-- Whitelist address -->
-                    <div class="mk-field">
-                        <div class="mk-label-row">
-                            <span class="mk-label">
-                                <i class="fas fa-network-wired mk-label-ico"></i> Apnar server IP
-                            </span>
-                            <button type="button" class="mk-ip-refresh" id="mkIpRefreshBtn">
-                                <i class="fas fa-rotate"></i> Check
-                            </button>
-                        </div>
-                        <div class="mk-ip">
-                            <code class="mk-ip-value" id="mkIpValue">&mdash;</code>
-                            <button type="button" class="mk-endpoint-test" id="mkIpCopyBtn"
-                                title="Copy this IP" aria-label="Copy server IP" disabled>
-                                <i class="fas fa-copy"></i>
-                            </button>
-                        </div>
-                        <div class="mk-note" id="mkIpNote">
-                            <i class="fas fa-info-circle mk-note-ico"></i>
-                            bulksmsbd.net e SMS pathate hole ei IP ta tar <strong>Phonebook</strong> e add
-                            korte hobe. <em>Check</em> e click korle ekhon ki address dhore jacche shei ta
-                            dekhabe &mdash; ghar er internet e POS chalanuLE address bodlaiye jay.
-                        </div>
-                    </div>
-
-                    <!-- Clickable placeholders -->
-                    <div class="mk-field">
-                        <div class="mk-label">Insert token</div>
-                        <div class="mk-chips">
-                            <button type="button" class="mk-chip" data-insert="{apikey}">{apikey}</button>
-                            <button type="button" class="mk-chip" data-insert="{number}">{number}</button>
-                            <button type="button" class="mk-chip" data-insert="{message}">{message}</button>
-                            <button type="button" class="mk-chip" data-insert="{senderid}">{senderid}</button>
-                        </div>
-                        <div class="mk-note">Token ta oi URL e bosiye den jeta apni upor paste koren.</div>
-                    </div>
-
-                    <!-- Balance -->
-                    <div class="mk-metrics">
-                        <div class="mk-metric">
-                            <div class="mk-metric-label">Credit balance</div>
-                            <div class="mk-metric-value" id="mkBalanceValue">—</div>
-                        </div>
-                        <button type="button" class="btn btn-sm btn-outline mk-metric-btn" id="mkBalanceBtn">
-                            <i class="fas fa-rotate"></i> Check
-                        </button>
-                    </div>
-
-                    <!-- Test send -->
-                    <div class="mk-sendtest">
-                        <div class="mk-label">Apnar number e test</div>
-                        <div class="mk-sendtest-row">
-                            <input type="text" class="form-control" id="mkTestPhone"
-                                placeholder="01XXXXXXXXX" spellcheck="false">
-                            <button type="button" class="btn btn-sm btn-primary" id="mkTestSendBtn">
-                                <i class="fas fa-paper-plane"></i> Send test
-                            </button>
-                        </div>
-                        <div class="mk-result" id="mkTestResult">
-                            Ekta chhoto SMS pathiye gateway thik moto kaj korchhe kina dekho.
-                        </div>
-                    </div>
-
-                    <!-- Advanced -->
-                    <div class="mk-advanced" id="mkAdvanced">
-                        <button type="button" class="mk-advanced-toggle" id="mkAdvancedToggle">
-                            <i class="fas fa-chevron-right"></i>
-                            <span>Advanced</span>
-                            <span class="mk-advanced-sub">body format, field name, headers</span>
-                        </button>
-                        <div class="mk-advanced-body">
-                            <div class="mk-field">
-                                <label class="mk-label" for="mkSmsMode">Body format</label>
-                                <select class="form-control" id="mkSmsMode">
-                                    <option value="placeholder" <?php echo $sms['marketing_sms_mode'] === 'placeholder' ? 'selected' : ''; ?>>
-                                        Form encoded
-                                    </option>
-                                    <option value="json" <?php echo $sms['marketing_sms_mode'] === 'json' ? 'selected' : ''; ?>>
-                                        JSON
-                                    </option>
-                                </select>
-                                <div class="mk-note">URL e {number}/{message} na thakle body diye pathay.</div>
-                            </div>
-
-                            <div class="mk-field">
-                                <label class="mk-label">Field names</label>
-                                <div class="mk-two">
-                                    <input type="text" class="form-control" id="mkSmsNumberKey"
-                                        value="<?php echo htmlspecialchars($sms['marketing_sms_number_key']); ?>"
-                                        placeholder="to" spellcheck="false">
-                                    <input type="text" class="form-control" id="mkSmsMessageKey"
-                                        value="<?php echo htmlspecialchars($sms['marketing_sms_message_key']); ?>"
-                                        placeholder="message" spellcheck="false">
-                                </div>
-                            </div>
-
-                            <div class="mk-field">
-                                <label class="mk-label" for="mkSmsHeaders">Extra headers</label>
-                                <textarea class="form-control mk-mono" id="mkSmsHeaders" rows="2"
-                                    placeholder="Authorization: Bearer xxxxx"><?php echo htmlspecialchars($sms['marketing_sms_headers']); ?></textarea>
-                                <div class="mk-note">Ek line e ekta <code>Name: value</code>.</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Manual mode -->
-            <div class="card-body mk-gb-manual d-none" id="mkSmsManualHint">
-                <div class="mk-empty">
-                    <i class="fas fa-mobile-screen"></i>
-                    <p>Phone SMS app-i SMS pathabe — credit kharoch hobe na.</p>
-                    <span>Protita message e apni "Send" button e tap koren.</span>
-                </div>
-            </div>
-
-            <div class="mk-gb-save">
-                <button type="button" class="btn btn-primary" id="mkSaveSmsBtn">
-                    <i class="fas fa-check"></i> Save gateway
-                </button>
-                <span class="mk-save-hint" id="mkSaveHint"></span>
-            </div>
-        </div>
-
         <div class="card mk-card">
             <div class="card-header">
                 <div class="card-title"><i class="fas fa-clock-rotate-left"></i> Recent campaigns</div>
@@ -672,11 +347,9 @@ $flash = getFlash();
                     <p class="text-muted mb-0" style="font-size:13px">Ekhono kono campaign chalu kora hoyni.</p>
                 <?php else: ?>
                     <div id="mkCampaignList">
-                        <?php foreach ($recentCampaigns as $c):
-                            $icon = $c['channel'] === 'sms' ? 'fa-comment-sms' : 'fab fa-whatsapp';
-                            $color = $c['channel'] === 'sms' ? '#4F46E5' : '#25D366'; ?>
+                        <?php foreach ($recentCampaigns as $c): ?>
                             <div class="mk-campaign-row">
-                                <i class="<?php echo $icon; ?>" style="color:<?php echo $color; ?>"></i>
+                                <i class="fa-comment-sms" style="color:#4F46E5"></i>
                                 <div class="mk-campaign-info">
                                     <div class="mk-campaign-name"><?php echo htmlspecialchars($c['name']); ?></div>
                                     <div class="mk-campaign-sub">
@@ -709,55 +382,6 @@ $flash = getFlash();
         <div class="modal-footer">
             <button type="button" class="btn btn-primary" data-close-modal>Close</button>
         </div>
-    </div>
-</div>
-
-<!-- Add saved numbers to the shop's own phone contacts.
-     WhatsApp has no API that writes contacts, so nothing here adds anything on
-     its own: the phone's own scanner is what actually saves a contact. Two routes
-     are offered because a QR holds exactly one contact, and a shop has more than
-     one customer. -->
-     This uses the project's own modal (modal-overlay + .active), NOT Bootstrap.
-     Bootstrap is not loaded anywhere in this project, so markup written for it
-     renders as an ordinary div and its buttons silently do nothing. -->
-<div class="modal-overlay" id="mkContactsModal">
-    <div class="modal" style="max-width:560px">
-            <div class="modal-header">
-                <div class="modal-title"><i class="fab fa-whatsapp"></i> Phone e number add korun</div>
-                <button type="button" class="modal-close" id="mkContactsClose" title="Close">
-                    <i class="fas fa-xmark"></i>
-                </button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted mk-contact-intro">
-                    QR ta phone er camera diye scan korun &mdash; scan korle WhatsApp kontact hisebe save
-                    korte bolbe, "Add" e chap din. Ekta QR e ekta number, tai scan
-                    kore "Next" e chap din.
-                </p>
-
-                <div class="mk-contact-list" id="mkContactList"></div>
-
-                <div class="mk-contact-empty d-none" id="mkContactEmpty">
-                    <i class="fas fa-users-slash"></i>
-                    <p class="mb-0">Kono customer number nai. Aage customer add korun.</p>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <!-- The bulk route. A QR is one contact at a time, which does not
-                     scale to a customer list; the phone's own importer takes the
-                     whole file in one step. -->
-                <a class="btn btn-sm btn-outline" id="mkVcfBtn" href="api/whatsapp-chat.php?action=contact_vcf">
-                    <i class="fas fa-file-arrow-down"></i> Sob (.vcf)
-                </a>
-                <div class="ms-auto d-flex gap-2">
-                    <button type="button" class="btn btn-sm btn-outline" id="mkContactPrevBtn">
-                        <i class="fas fa-chevron-left"></i> Previous
-                    </button>
-                    <button type="button" class="btn btn-sm btn-whatsapp" id="mkContactNextBtn">
-                        Next <i class="fas fa-chevron-right"></i>
-                    </button>
-                </div>
-            </div>
     </div>
 </div>
 

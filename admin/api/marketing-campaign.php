@@ -12,7 +12,7 @@
  *   pause     { campaign_id }
  *   cancel    { campaign_id }
  *   send      { campaign_id, offset, limit }                    -> batch of numbers/messages
- *   settings  { marketing_bridge_url, marketing_bridge_token, ... }
+ *   settings  { marketing_delay_min, ... }                      -> SMS settings
  *   sms_ip                                                       -> the address to whitelist
  * GET action:
  *   list
@@ -22,6 +22,10 @@
 require_once '../../config/db.php';
 require_once '../../config/marketing.php';
 require_once '../../config/sms_gateway.php';
+// Every SMS in a campaign goes through this: it sends the message and writes the
+// usage row the SMS counts are read back from. Nothing is debited and nothing is
+// refused for want of credit - SMS is not sold by the pack any more.
+require_once '../../config/sms_usage.php';
 startSecureSession();
 
 header('Content-Type: application/json; charset=utf-8');
@@ -56,11 +60,44 @@ function loadCampaign($db, $ownerId, $id)
     return $row;
 }
 
+/**
+ * Days since each customer in this batch last bought, for {last_visit_days}.
+ *
+ * The composer previews those tokens with sample numbers, so the send path has
+ * to fill them as well - until now a campaign carrying the "Inactive reminder"
+ * template left the braces in the customer's SMS, because nothing here ever
+ * looked the visit up. A customer with no sale is simply missing from the map,
+ * which renders as "onek din".
+ */
+function marketingLastVisitDays($db, $ownerId, array $batch)
+{
+    $ids = [];
+    foreach ($batch as $r) {
+        $id = (int)($r['customer_id'] ?? 0);
+        if ($id > 0) { $ids[$id] = $id; }
+    }
+    if ($ids === []) {
+        return [];
+    }
+
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $db->prepare("SELECT customer_id, MAX(created_at) AS last_visit FROM sales
+                          WHERE owner_id = ? AND customer_id IN ($in) GROUP BY customer_id");
+    $stmt->execute(array_merge([$ownerId], array_values($ids)));
+
+    $days = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $days[(int)$row['customer_id']] = (int)floor((time() - strtotime((string)$row['last_visit'])) / 86400);
+    }
+    return $days;
+}
+
 switch ($action) {
 
     // ── Create ────────────────────────────────────────────────────────────────
     case 'create': {
-        $channel = $_POST['channel'] === 'sms' ? 'sms' : 'whatsapp';
+        // Campaigns leave as SMS only.
+        $channel = 'sms';
         $name    = trim($_POST['name'] ?? '');
         $message = trim($_POST['message'] ?? '');
         $ids     = $_POST['customer_ids'] ?? [];
@@ -71,64 +108,23 @@ switch ($action) {
         if ($message === '') {
             fail('Write the message first.');
         }
-        if (mb_strlen($message) > ($channel === 'sms' ? 1000 : 4096)) {
-            fail($channel === 'sms'
-                ? 'SMS is too long (max 1000 characters).'
-                : 'WhatsApp message is too long (max 4096 characters).');
+        if (mb_strlen($message) > 1000) {
+            fail('SMS is too long (max 1000 characters).');
         }
         if ($name === '') {
-            $name = ($channel === 'sms' ? 'SMS' : 'WhatsApp') . ' campaign - ' . date('d M Y H:i');
+            $name = 'SMS campaign - ' . date('d M Y H:i');
         }
 
         // Pull the recipients fresh from the customers table, never from the
         // client payload, so phone numbers cannot be spoofed.
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $stmt = $db->prepare("SELECT id, name, phone, has_whatsapp FROM customers
+        $stmt = $db->prepare("SELECT id, name, phone FROM customers
                                WHERE owner_id = ? AND id IN ($placeholders)");
         $stmt->execute(array_merge([$ownerId], array_map('intval', $ids)));
         $customers = $stmt->fetchAll();
 
         if (count($customers) === 0) {
             fail('None of the selected customers could be found.');
-        }
-
-        // ── Only confirmed numbers may be targeted ──────────────────────────
-        //
-        // A recipient is somebody the shop can actually reach. Sending to a
-        // number nobody has verified is how a campaign comes back "sent" while
-        // the customer never saw it, which is worse than sending to nobody: the
-        // report says it worked.
-        //
-        // This is enforced here rather than trusted to the checkbox in the
-        // picker, for the usual reason - the client is not the security
-        // boundary, and a stale page or a hand-rolled request would otherwise
-        // get numbers into a campaign that the UI said were impossible to pick.
-        //
-        // SMS is exempt on purpose. It has no equivalent of a WhatsApp
-        // account, so there is nothing to confirm and every number with a
-        // handset is reachable.
-        $dropped = 0;
-        if ($channel === 'whatsapp') {
-            $keep = [];
-            foreach ($customers as $c) {
-                if ((int)($c['has_whatsapp'] ?? 0) === 1) {
-                    $keep[] = $c;
-                } else {
-                    $dropped++;
-                }
-            }
-            $customers = $keep;
-        }
-
-        if (count($customers) === 0) {
-            // Said plainly, because this is what the shopkeeper sees when they
-            // pick from a list that was itself stale. "Check numbers" is the
-            // fix and naming it here saves a support round trip.
-            fail($channel === 'whatsapp'
-                ? 'Ei customer der kono number e WhatsApp confirm hoy nai. Age "Check numbers" chalan, '
-                  . 'tarpor campaign banano. Bridge WhatsApp address book theke nije thkei confirm kore, '
-                  . 'tai bridged connected thakle eta nijei hobe.'
-                : 'None of the selected customers could be found.');
         }
 
         try {
@@ -172,10 +168,6 @@ switch ($action) {
             'ok'          => true,
             'campaign_id' => $campaignId,
             'total'       => $inserted,
-            // Said out loud rather than silently dropped. A shopkeeper who
-            // selected 40 and gets a campaign of 33 deserves to know which 7
-            // went and why, instead of finding out from a delivery report.
-            'skipped'     => $dropped,
         ]);
         break;
     }
@@ -239,21 +231,11 @@ switch ($action) {
         }
 
         $settings  = getMarketingSettings($ownerId);
+        // Read once for the whole batch: the name is the same for every
+        // recipient, and asking for it per message is a query per SMS.
+        $shopName  = marketingShopName($ownerId, $settings);
+        $lastVisits = marketingLastVisitDays($db, $ownerId, $batch);
         $deliveries = [];
-        $agentMode = waAgentModeEnabled($settings);
-
-        if ($c['channel'] === 'whatsapp') {
-            $bridge = marketingGetBridgeStatus($ownerId);
-            if (!$bridge['connected']) {
-                echo json_encode([
-                    'ok'      => true,
-                    'stopped' => true,
-                    'error'   => $bridge['error'] ?: 'WhatsApp is not connected. Scan the QR first.',
-                    'campaign' => campaignProgress($db, $campaign),
-                ]);
-                break;
-            }
-        }
 
         $upd = $db->prepare("UPDATE marketing_recipients
                              SET status = ?, error = ?, sent_at = ?, message = ?
@@ -261,57 +243,19 @@ switch ($action) {
 
         foreach ($batch as $r) {
             $text = marketingRenderTemplate($c['message'], $r, [
-                'shop' => $settings['marketing_sender_name'] ?? '',
+                'shop'            => $shopName,
+                'last_visit_days' => $lastVisits[(int)($r['customer_id'] ?? 0)] ?? null,
             ]);
 
-            $ok  = false;
-            $err = '';
-            $skipReason = '';
-            // Did this recipient cost a round trip to WhatsApp? A number that
-            // turns out not to be on WhatsApp never reaches the send call, but
-            // it still spent a probe, so it still has to be paced below.
-            $probed = false;
+            $res = smsSendAndLog($db, $ownerId, $r['phone'], $text, [
+                'msg_type' => 'marketing',
+                'user_id'  => $user['id'] ?? null,
+            ]);
+            $ok  = $res['ok'];
+            $err = $res['error'];
+            $status = $ok ? 'sent' : 'failed';
 
-            if ($c['channel'] === 'whatsapp' && !$agentMode) {
-                // Check before sending. A landline or a cancelled SIM can never
-                // receive anything, and a send aimed at one still burns the
-                // linked account's allowance. A failed check (exists === null)
-                // says nothing about the customer, so we still try to send.
-                //
-                // Agent mode skips this, and that is not a shortcut. Asking the
-                // agent would mean a job out and a wait for the answer, up to
-                // twelve seconds each, inside a web request that a shared host
-                // will cut off - five of them is a minute. The bridge holds the
-                // WhatsApp socket and can probe in the same breath as it sends,
-                // so it does the check there instead and reports 'skipped'.
-                $check = marketingCheckWhatsApp($ownerId, $r['phone']);
-                $probed = true;
-                if ($check['ok'] && $check['exists'] === false) {
-                    $skipReason = 'No WhatsApp on this number';
-                }
-            }
-
-            if ($skipReason !== '') {
-                $status = 'skipped';
-            } else {
-                if ($c['channel'] === 'whatsapp') {
-                    $res = marketingSendWhatsApp($ownerId, $r['phone'], $text, [
-                        'campaign_id'  => $campaign,
-                        'recipient_id' => (int)$r['id'],
-                    ]);
-                    $ok  = $res['ok'];
-                    $err = $res['error'];
-                } else {
-                    $res = marketingSendSms($ownerId, $r['phone'], $text);
-                    // In manual SMS mode the message is handed to the phone app,
-                    // so it counts as delivered-as-far-as-the-POS-can-tell.
-                    $ok  = $res['ok'];
-                    $err = $res['error'];
-                }
-                $status = $ok ? 'sent' : 'failed';
-            }
-
-            $note = $status === 'sent' ? '' : ($skipReason !== '' ? $skipReason : $err);
+            $note = $ok ? '' : $err;
 
             $upd->execute([
                 $status,
@@ -328,20 +272,12 @@ switch ($action) {
                 'phone_display' => marketingFormatPhone($r['phone']),
                 'message' => $text,
                 'ok'      => $ok,
-                'skipped' => $skipReason !== '',
-                'error'   => $skipReason !== '' ? $skipReason : ($ok ? '' : $err),
+                'error'   => $ok ? '' : $err,
             ];
 
             // Human-scale pacing keeps the account from being flagged and gives
             // the shopkeeper a chance to stop before a bad message goes out.
-            //
-            // Agent mode does not sleep here. The whole batch is handed to the
-            // queue in a few milliseconds and the bridge paces its own sends
-            // between jobs, which is both faster for the shop and the only thing
-            // that works on shared hosting: this sleep used to hold a web
-            // request open for up to forty seconds, and stopping a campaign was
-            // only instant after the current batch had finished.
-            if (!$agentMode && ($ok || $probed)) {
+            if ($ok) {
                 $min = max(1, (int)($settings['marketing_delay_min'] ?? 3));
                 $max = max($min, (int)($settings['marketing_delay_max'] ?? 8));
                 if ($max > 0) {
@@ -358,6 +294,8 @@ switch ($action) {
 
         echo json_encode([
             'ok'        => true,
+            'stopped'   => false,
+            'error'     => null,
             'deliveries' => $deliveries,
             'campaign'  => $progress,
         ]);
@@ -393,19 +331,12 @@ switch ($action) {
     // ── Settings ─────────────────────────────────────────────────────────────
     case 'settings': {
         $allowed = [
-            'marketing_bridge_url', 'marketing_bridge_token', 'marketing_delay_min',
-            'marketing_delay_max', 'marketing_sender_name', 'marketing_sms_provider',
-            'marketing_sms_api_key', 'marketing_sms_mode',
+            'marketing_delay_min', 'marketing_delay_max', 'marketing_sender_name',
+            'marketing_sms_provider', 'marketing_sms_api_key', 'marketing_sms_mode',
             'marketing_sms_get_url', 'marketing_sms_post_url',
             'marketing_sms_balance_url', 'marketing_sms_sender_id',
             'marketing_sms_number_key', 'marketing_sms_message_key',
             'marketing_sms_headers',
-            // Agent mode. marketingAgentToken is deliberately absent: the token
-            // that lets a process outside the shop call this endpoint is saved
-            // through marketingSaveBridgeSettings(), which validates it, rather
-            // than being written straight into the settings table by a form
-            // field. A blank box here must mean "unchanged", and the only way to
-            // be sure of that is to keep one door for it.
         ];
         foreach ($allowed as $key) {
             if (array_key_exists($key, $_POST)) {
@@ -450,7 +381,7 @@ switch ($action) {
 
     case 'sms_test': {
         // Sends one real SMS to a number the shop types in, to prove the
-        // gateway config is right before a campaign burns credits.
+        // gateway config is right before a campaign goes out to the whole list.
         //
         // A test_url may be passed to try one endpoint without disturbing the
         // saved settings — that is how the GET and POST boxes are tested
@@ -491,203 +422,6 @@ switch ($action) {
         break;
     }
 
-    // Routed through marketingBridgeCommand() rather than calling the bridge
-    // directly, so Unlink and Restart also work in agent mode - where there is
-    // no bridge to call. The command is parked in the database and the bridge
-    // picks it up on its next poll.
-    case 'logout_whatsapp': {
-        $res = marketingBridgeCommand($ownerId, 'logout');
-        echo json_encode(['ok' => $res['ok'], 'error' => $res['error']]);
-        break;
-    }
-
-    case 'restart_whatsapp': {
-        $res = marketingBridgeCommand($ownerId, 'restart');
-        echo json_encode(['ok' => $res['ok'], 'error' => $res['error']]);
-        break;
-    }
-
-    case 'refresh_qr': {
-        $res = marketingBridgeCommand($ownerId, 'refresh_qr');
-        echo json_encode(['ok' => $res['ok'], 'error' => $res['error']]);
-        break;
-    }
-
-    /**
-     * ── sync_whatsapp ─────────────────────────────────────────────────────────
-     * Probe a small batch of unchecked customer numbers and cache the answers.
-     *
-     * Batched from the browser for the same reason the send loop is: a long
-     * server-side run would sit inside one request until the web server killed it,
-     * and the shopkeeper would have no way to stop it. Here each request is short,
-     * progress is visible, and Stop is instant.
-     *
-     * Only rows with has_whatsapp IS NULL are touched, so a re-run costs nothing
-     * and can never re-probe a number we already know about. Numbers with no
-     * usable phone are skipped rather than written as false, because "there is no
-     * number" and "this number has no WhatsApp" are different answers and only the
-     * second one is worth remembering.
-     */
-    case 'sync_whatsapp': {
-        $limit  = min(25, max(1, (int)($_POST['limit'] ?? 10)));
-        $cursor = max(0, (int)($_POST['cursor'] ?? 0));
-        $recheck = !empty($_POST['recheck']);
-
-        // Fail fast and clearly if the bridge is not up: without it every probe
-        // returns the same "not connected" error and the shopkeeper would watch a
-        // long run achieve nothing. marketingGetBridgeStatus() always reports
-        // ok=true and puts the failure in `error`, with status left null, so the
-        // two cases are told apart by whether a status ever arrived.
-        $status = marketingGetBridgeStatus($ownerId);
-        if (empty($status['status'])) {
-            echo json_encode([
-                'ok'    => false,
-                'error' => $status['error'] ?: 'WhatsApp bridge is not reachable. Bridge chaltese abar try korun.',
-            ]);
-            break;
-        }
-        if (empty($status['connected'])) {
-            echo json_encode([
-                'ok'     => false,
-                'status' => $status['status'],
-                'error'  => 'WhatsApp connect nai. QR scan kore link korun.',
-            ]);
-            break;
-        }
-
-        // A recheck is the one case that revisits settled rows, so it is opt-in
-        // and it only covers this page, not the whole customer base.
-        $sql = "SELECT id, phone FROM customers
-                WHERE owner_id = ? AND id > ?
-                  AND TRIM(COALESCE(phone, '')) <> ''
-                  AND (" . ($recheck ? "1" : "has_whatsapp IS NULL") . ")
-                ORDER BY id ASC LIMIT $limit";
-        $stmt = $db->prepare($sql);
-        $stmt->execute([$ownerId, $cursor]);
-        $batch = $stmt->fetchAll();
-
-        if (!$batch) {
-            echo json_encode([
-                'ok' => true, 'done' => true, 'checked' => 0, 'next_cursor' => $cursor,
-            ]);
-            break;
-        }
-
-        $yes = $no = $unknown = 0;
-        $last = $cursor;
-        $update = $db->prepare("UPDATE customers SET has_whatsapp = ?, whatsapp_checked_at = NOW() WHERE id = ?");
-        $clear  = $db->prepare("UPDATE customers SET has_whatsapp = NULL WHERE id = ?");
-
-        // Split the batch first, so the two modes can each probe the way their
-        // own transport needs. A number with no usable phone is cleared rather
-        // than counted: "there is no number" and "this number has no WhatsApp"
-        // are different answers and only the second is worth remembering.
-        $probe = [];
-        foreach ($batch as $row) {
-            $last = (int)$row['id'];
-            $phone = marketingNormalizePhone($row['phone']);
-            if ($phone === '') {
-                $clear->execute([$last]);
-                continue;
-            }
-            $probe[] = ['id' => $last, 'phone' => $phone];
-        }
-
-        $agentMode = waAgentModeEnabled(getMarketingSettings($ownerId));
-
-        if ($agentMode) {
-            // All of them go out at once and are waited for together.
-            //
-            // Probing these one at a time would be up to twelve seconds each -
-            // two minutes for a default batch of ten, inside a single request,
-            // on a host that cuts requests off well before that. The bridge
-            // works through its own queue regardless, so asking for all ten up
-            // front costs about as long as the slowest one.
-            //
-            // The wait below is sized for the bridge, and the bridge paces a
-            // check far more tightly than a send - an existence probe delivers
-            // nothing, so it is not what a burst of sends looks like. Ten of them
-            // come back in a few seconds. Anything still unanswered when the
-            // wait ends is left NULL on purpose, and the next run picks it up,
-            // because the query below selects has_whatsapp IS NULL.
-            $keys = [];
-            $byKey = [];
-            foreach ($probe as $p) {
-                $key = waAgentRequestKey();
-                $put = waAgentEnqueue($ownerId, 'check', $p['phone'], '', [], $key);
-                if ($put['ok']) {
-                    $keys[] = $key;
-                    $byKey[$key] = $p;
-                } else {
-                    $clear->execute([$p['id']]);
-                    $unknown++;
-                    $err = $put['error'];
-                }
-            }
-
-            $answers = $keys ? waAgentWaitForChecks($db, $keys, 30) : [];
-
-            foreach ($keys as $key) {
-                $p = $byKey[$key];
-                $check = $answers[$key] ?? ['ok' => false, 'exists' => null, 'error' => 'no answer'];
-
-                if (!$check['ok'] || $check['exists'] === null) {
-                    // The bridge could not answer. Leave the row NULL so a later
-                    // sync still picks it up, and do not count it as "no
-                    // WhatsApp" - a customer must never be written off because
-                    // the bridge was slow.
-                    $clear->execute([$p['id']]);
-                    $unknown++;
-                    $err = $check['error'] ?: 'check failed';
-                } else {
-                    $exists = $check['exists'] === true;
-                    $update->execute([$exists ? 1 : 0, $p['id']]);
-                    $exists ? $yes++ : $no++;
-                }
-            }
-        } else {
-            foreach ($probe as $i => $p) {
-                $check = marketingCheckWhatsApp($ownerId, $p['phone']);
-
-                if (!$check['ok'] || $check['exists'] === null) {
-                    $clear->execute([$p['id']]);
-                    $unknown++;
-                    $err = $check['error'] ?: 'check failed';
-                } else {
-                    $exists = $check['exists'] === true;
-                    $update->execute([$exists ? 1 : 0, $p['id']]);
-                    $exists ? $yes++ : $no++;
-                }
-
-                // Pace between probes, never after the last one in the batch
-                // (that would just make Stop feel sluggish). Gentler than the
-                // send loop: checking is far less conspicuous than delivering.
-                if ($i < count($probe) - 1) {
-                    usleep(random_int(1200, 2600) * 1000);
-                }
-            }
-        }
-
-        $left = $db->prepare("SELECT COUNT(*) FROM customers
-                              WHERE owner_id = ? AND TRIM(COALESCE(phone, '')) <> ''
-                                AND has_whatsapp IS NULL");
-        $left->execute([$ownerId]);
-        $remaining = (int)$left->fetchColumn();
-
-        echo json_encode([
-            'ok'          => true,
-            'done'        => $remaining === 0,
-            'checked'     => count($batch),
-            'yes'         => $yes,
-            'no'          => $no,
-            'unknown'     => $unknown,
-            'next_cursor' => $last,
-            'remaining'   => $remaining,
-            'error'       => $err ?? null,
-        ]);
-        break;
-    }
-
     default:
         fail('Unknown action: ' . htmlspecialchars($action), 400);
 }
@@ -719,8 +453,8 @@ function finishCampaign($db, $campaignId)
 {
     $p = campaignProgress($db, $campaignId);
     // A campaign that delivered nothing is a failure even when no single send
-    // errored - that is the shape of a list where nobody has WhatsApp, and
-    // reporting it as "completed" would hide an empty result.
+    // errored - that is the shape of a list where no number could be reached,
+    // and reporting it as "completed" would hide an empty result.
     $nothingDelivered = $p['sent'] === 0 && ($p['failed'] + $p['skipped']) > 0;
     $status = $nothingDelivered ? 'failed' : 'completed';
     $stmt = $db->prepare("UPDATE marketing_campaigns

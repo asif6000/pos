@@ -27,9 +27,6 @@
  */
 
 require_once '../config/db.php';
-// For getMarketingSettings(), so the bridge URL resolves the same way here as it
-// does on the pages that actually talk to the bridge.
-require_once '../config/marketing.php';
 startSecureSession();
 
 if (!isLoggedIn() || !hasRole('admin')) {
@@ -55,8 +52,8 @@ state($ok ? 'ok' : 'bad');
 
 foreach ([
     'pdo_mysql' => 'Database connections. Without it nothing works.',
-    'mbstring'  => 'Invoice rendering and the Bangla text in SMS/WhatsApp messages. product labels break without it.',
-    'curl'      => 'WhatsApp bridge, bulk SMS, and Google Contacts. The app now degrades with a message instead of a 500, but those three features stay switched off.',
+    'mbstring'  => 'Invoice rendering and the Bangla text in SMS messages. product labels break without it.',
+    'curl'      => 'Bulk SMS and Google Contacts. The app now degrades with a message instead of a 500, but those features stay switched off.',
     'json'      => 'Every API endpoint speaks JSON.',
     'gd'        => 'Only needed if you generate images in PHP.',
 ] as $ext => $why) {
@@ -109,7 +106,6 @@ if ($db) {
         'cashbook_entries', 'expense_categories', 'marketing_campaigns',
         'marketing_recipients', 'product_variables', 'product_variable_values',
         'product_variable_map', 'staff', 'staff_payments',
-        'whatsapp_contacts', 'whatsapp_messages',
     ];
     $present = [];
     try {
@@ -166,102 +162,6 @@ if ($db) {
     } catch (Throwable $e) {
         state('warn');
     }
-}
-
-// ------------------------------------------------------------------- Bridge
-// The WhatsApp bridge is a separate Node service, not part of this application.
-// Shared hosting cannot run it, so the usual arrangement is that it runs on a
-// machine inside the shop and the POS reaches it over HTTPS through a tunnel.
-// This check answers the only question that matters from here: can the server
-// actually reach it?
-try {
-    // Prefer a saved value, then fall back to whatever the app itself would
-    // resolve. Reading the settings table alone reported "no bridge URL
-    // configured" on a development machine that was working perfectly, because
-    // there the URL comes from whatsapp-server/.env rather than the database -
-    // and this is the page people are sent to when the Inbox says the bridge is
-    // down, so the two disagreeing is actively unhelpful.
-    $bUrl = '';
-    $bTok = '';
-    $st = $db->prepare("SELECT setting_key, setting_value FROM settings
-                        WHERE setting_key IN ('marketing_bridge_url','marketing_bridge_token')");
-    $st->execute();
-    foreach ($st->fetchAll() as $r) {
-        if ($r['setting_key'] === 'marketing_bridge_url')  $bUrl = trim((string)$r['setting_value']);
-        if ($r['setting_key'] === 'marketing_bridge_token') $bTok = trim((string)$r['setting_value']);
-    }
-    if ($bUrl === '' || $bTok === '') {
-        $resolved = getMarketingSettings(0);
-        if ($bUrl === '') { $bUrl = trim((string)($resolved['marketing_bridge_url'] ?? '')); }
-        if ($bTok === '') { $bTok = trim((string)($resolved['marketing_bridge_token'] ?? '')); }
-    }
-
-    if ($bUrl === '') {
-        add($checks, 'warn', 'WhatsApp bridge', 'no bridge URL configured - set it on the Inbox page ("Bridge setup") or in Settings > WhatsApp Bridge. WhatsApp campaigns and WhatsApp invoices are switched off until then');
-        state('warn');
-    } elseif ($bTok === '') {
-        add($checks, 'warn', 'WhatsApp bridge', 'a bridge URL is set but no API token - copy API_TOKEN out of the bridge .env into the same form');
-        state('warn');
-    } elseif (!appHasCurl()) {
-        add($checks, 'bad', 'WhatsApp bridge', 'this server has no php-curl, so the bridge cannot be contacted at all');
-        state('bad');
-    } else {
-        $t0 = microtime(true);
-        $ch = curl_init(rtrim($bUrl, '/') . '/api/status');
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => 8,
-            CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_HTTPHEADER     => ['X-Api-Token: ' . $bTok],
-        ]);
-        $body = curl_exec($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $cerr = curl_error($ch);
-        curl_close($ch);
-        $ms = (int)round((microtime(true) - $t0) * 1000);
-
-        $isLocal = (bool)preg_match('~^(https?://)(127\.0\.0\.1|localhost|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)~i', $bUrl);
-        $where  = $isLocal ? ' (this is a loopback address, so it only works if something is running on the same server)' : '';
-
-        if ($code === 200) {
-            $j = json_decode((string)$body, true);
-            // The bridge reports { ok, status, qr, me, lastError, ... }. There is
-            // no "connected" boolean - status carries it. Checking for a field
-            // that does not exist made this report "not logged in" against a
-            // bridge that was logged in and answering, which is worse than not
-            // checking at all.
-            $status = strtoupper((string)($j['status'] ?? 'unknown'));
-            $me     = $j['me']['name'] ?? null;
-            $as     = $me ? ' as ' . $me : '';
-            if ($status === 'CONNECTED') {
-                add($checks, 'ok', 'WhatsApp bridge', "connected{$as} ({$ms}ms)");
-                state('ok');
-            } elseif ($status === 'QR' || !empty($j['qr'])) {
-                add($checks, 'warn', 'WhatsApp bridge',
-                    "reachable ({$ms}ms) but waiting for a QR scan - open the bridge and scan to link the number");
-                state('warn');
-            } else {
-                $err = $j['lastError'] ?? null;
-                add($checks, 'warn', 'WhatsApp bridge',
-                    "reachable ({$ms}ms) but status={$status}" . ($err ? " - {$err}" : ' - open the bridge to see what it says'));
-                state('warn');
-            }
-        } elseif ($code === 401) {
-            add($checks, 'bad', 'WhatsApp bridge',
-                'reachable but the API token does not match. The token in Marketing settings must be identical to API_TOKEN in the bridge .env file.');
-            state('bad');
-        } else {
-            $hint = $isLocal
-                ? ' - 127.0.0.1 on shared hosting is the cPanel server itself, and it cannot run a Node process. Point this at a tunnel URL instead, or switch WhatsApp off and use SMS.'
-                : ' - check the bridge is running and the tunnel is up.';
-            add($checks, 'bad', 'WhatsApp bridge',
-                "not reachable (HTTP {$code}, {$ms}ms)" . ($cerr ? ": " . $cerr : '') . $hint);
-            state('bad');
-        }
-    }
-} catch (Throwable $e) {
-    add($checks, 'warn', 'WhatsApp bridge', 'could not be checked: ' . $e->getMessage());
-    state('warn');
 }
 
 // ------------------------------------------------------------------ Outbound IP

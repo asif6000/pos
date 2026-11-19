@@ -95,10 +95,10 @@ $stmt->execute([$member['id']]);
 $payments = $stmt->fetchAll();
 
 // Period boundaries
-$monthStart = date;
-$monthEnd = date;
-$weekStart = date('Y-m-d', strtotime);
-$weekEnd = date('Y-m-d', strtotime);
+$monthStart = date('Y-m-01');
+$monthEnd = date('Y-m-t');
+$weekStart = date('Y-m-d', strtotime('monday this week'));
+$weekEnd = date('Y-m-d', strtotime('sunday this week'));
 
 // Period totals
 $stmt = $db->prepare("SELECT
@@ -275,7 +275,7 @@ include'includes/header.php';
                 &middot; <?php echo $salaryType; ?> salary</div>
         </div>
         <span class="dash-hero-date">
-            <i class="far fa-calendar-alt"></i> <?php echo date; ?>
+            <i class="far fa-calendar-alt"></i> <?php echo date('l, d M Y'); ?>
         </span>
     </div>
     <div class="dash-hero-bottom">
@@ -362,19 +362,19 @@ include'includes/header.php';
             <div class="si-value"><?php echo $dailyRate ? formatCurrency($dailyRate) : '-'; ?></div>
         </div>
         <div class="salary-item">
-            <div class="si-label">Earned (<?php echo date; ?>)</div>
+            <div class="si-label">Earned (<?php echo date('M Y'); ?>)</div>
             <div class="si-value"><?php echo formatCurrency($monthAgg['m_earned'] ?: 0); ?></div>
         </div>
         <div class="salary-item">
-            <div class="si-label">Bonus (<?php echo date; ?>)</div>
+            <div class="si-label">Bonus (<?php echo date('M Y'); ?>)</div>
             <div class="si-value" style="color:#059669;"><?php echo formatCurrency($monthAgg['m_bonus'] ?: 0); ?></div>
         </div>
         <div class="salary-item">
-            <div class="si-label">Advance (<?php echo date; ?>)</div>
+            <div class="si-label">Advance (<?php echo date('M Y'); ?>)</div>
             <div class="si-value" style="color:#dc2626;"><?php echo formatCurrency($monthAgg['m_advance'] ?: 0); ?></div>
         </div>
         <div class="salary-item">
-            <div class="si-label">Net Received (<?php echo date; ?>)</div>
+            <div class="si-label">Net Received (<?php echo date('M Y'); ?>)</div>
             <div class="si-value" style="color:#059669;"><?php echo formatCurrency($monthAgg['m_net'] ?: 0); ?></div>
         </div>
     </div>
@@ -389,7 +389,7 @@ include'includes/header.php';
     </div>
     <?php
     $chartMax = max(array_column($monthRows, 'total')) ?: 1;
-    $curYm = date;
+    $curYm = date('Y-m');
     ?>
     <div class="chart-bars">
         <?php foreach ($monthRows as $mr): ?>

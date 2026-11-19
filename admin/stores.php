@@ -6,9 +6,7 @@
 require_once '../config/db.php';
 startSecureSession();
 
-if (!isLoggedIn() || !hasRole('admin')) {
-    redirect('../auth/login.php');
-}
+requirePermission('stores');
 
 define('PAGE_TITLE', 'Stores');
 $db = getDB();
@@ -38,6 +36,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             try {
                 if ($action === 'add') {
+                    // The package decides how many branches may exist, not the person
+                    // adding them - otherwise a Business shop quietly grows to ten and
+                    // the plan page stops meaning anything. Only active branches count,
+                    // so closing one down really does free its slot.
+                    $cap = planStoreLimit();
+                    if ($cap !== null) {
+                        $countOwner = $currentUser['owner_id'] ?: $currentUser['id'];
+                        $stmtCap = $db->prepare("SELECT COUNT(*) FROM stores WHERE owner_id = ? AND status = 'active'");
+                        $stmtCap->execute([$countOwner]);
+                        $usedCap = (int) $stmtCap->fetchColumn();
+                        if ($usedCap >= $cap) {
+                            throw new Exception(
+                                'Your current package includes ' . $cap . ' ' . ($cap === 1 ? 'store' : 'stores')
+                                . ' (' . $usedCap . ' in use). Upgrade to add another branch: '
+                                . '<a href="../home.php#pricing" style="font-weight:700;text-decoration:underline;">see plans</a>'
+                            );
+                        }
+                    }
+
                     // Check if email exists first if admin details provided
                     if (!empty($admin_email)) {
                         $stmt = $db->prepare("SELECT id FROM users WHERE email = ?");
@@ -150,14 +167,38 @@ include 'includes/header.php';
     </div>
 <?php endif; ?>
 
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+<?php
+// Said out loud on the page, so the ceiling is not discovered only when a save
+// fails: an owner deciding whether to open a second counter reads it here first.
+$storeCap     = planStoreLimit();
+$activeStores = 0;
+foreach ($stores as $listed) {
+    if ($listed['status'] === 'active') { $activeStores++; }
+}
+$capReached = ($storeCap !== null && $activeStores >= $storeCap);
+?>
+<div class="page-toolbar">
     <div>
         <h2 style="margin-bottom: 0.5rem;">Stores / Branches</h2>
-        <p class="text-muted">Manage your store locations</p>
+        <p class="text-muted">
+            <?php if ($storeCap === null): ?>
+                Unlimited branches on your current package.
+            <?php else: ?>
+                Your package includes <strong><?php echo (int) $storeCap; ?></strong>
+                <?php echo $storeCap === 1 ? 'store' : 'stores'; ?> &mdash;
+                <?php echo (int) $activeStores; ?> in use.
+            <?php endif; ?>
+        </p>
     </div>
-    <button class="btn btn-primary" onclick="openModal('add')">
-        <i class="fas fa-plus"></i> Add Store
-    </button>
+    <?php if ($capReached): ?>
+        <a class="btn btn-primary" href="../home.php#pricing">
+            <i class="fas fa-arrow-up"></i> Upgrade for more stores
+        </a>
+    <?php else: ?>
+        <button class="btn btn-primary" onclick="openModal('add')">
+            <i class="fas fa-plus"></i> Add Store
+        </button>
+    <?php endif; ?>
 </div>
 
 <div class="card">

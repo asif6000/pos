@@ -1,13 +1,13 @@
 <?php
 /**
- * The invoice as a self-contained HTML page, for the bridge to draw to a PNG.
+ * The invoice as a self-contained HTML page, for on-screen viewing and for
+ * drawing the invoice image.
  *
  * This exists because the receipt image cannot be made where the sale is. The
- * POS is a shared host with neither GD nor a browser, and the only thing that
- * can rasterise a page is the Chromium sitting on the shop PC next to the
- * WhatsApp bridge. So the POS writes the markup and the bridge draws it - see
- * whatsapp-server/lib/render.js, which was written for this and had never been
- * called by anything.
+ * POS is a shared host with neither GD nor a browser, so the POS writes the
+ * markup and whatever renders the page draws it: the customer-facing
+ * invoice-view.php unwraps this document into the page it serves, and the
+ * mobile sell flow returns it so a phone shows the same receipt.
  *
  * Self-contained on purpose. renderHtml() blocks every request that is not a
  * data: URL, so a web font or a remote logo would not load and the receipt would
@@ -57,8 +57,9 @@ function invoiceLoadSale($db, $saleId, $ownerId)
         FROM sales s
         LEFT JOIN customers c ON s.customer_id = c.id
         LEFT JOIN users u ON s.user_id = u.id
-        WHERE s.id = ? AND s.owner_id = ?");
-    $stmt->execute([$saleId, $ownerId]);
+        WHERE s.id = ? AND " . saleOwnerScopeSql($ownerId, 's', 'u'));
+    // Two placeholders on the owner side, so the id is bound twice.
+    $stmt->execute([$saleId, $ownerId, $ownerId]);
     $sale = $stmt->fetch();
     if (!$sale) {
         return ['ok' => false, 'error' => 'Ei invoice-ta nai.'];
@@ -126,7 +127,8 @@ function invoiceLoadSale($db, $saleId, $ownerId)
 }
 
 /**
- * The receipt as a self-contained HTML page, for the bridge to draw to a PNG.
+ * The receipt as a self-contained HTML page, for on-screen viewing and for
+ * drawing the invoice image.
  *
  * @see invoiceLoadSale() for the data this renders.
  */
@@ -233,8 +235,8 @@ function invoiceBuildHtml($db, $saleId, $ownerId, $phone = '')
         // happened to be in light mode.
         //
         // Nothing here set a background, so the canvas was painted with whatever
-        // the browser's own colour scheme defaults to. Headless Chrome on the
-        // bridge answered dark: the PNG came out #121212, and the body text is
+        // the browser's own colour scheme defaults to. Headless Chrome answered
+        // dark: the PNG came out #121212, and the body text is
         // #111 - a difference of one step, so the customer received a black
         // rectangle with the receipt printed on it in a shade of black they could
         // not tell apart from the paper. Nothing errored; the file was a

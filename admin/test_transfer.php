@@ -1,5 +1,12 @@
 <?php
 require_once '../config/db.php';
+startSecureSession();
+// This one writes a real stock transfer every time it is fetched.
+if (!isLoggedIn() || !hasRole('admin')) {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    exit('Forbidden');
+}
 $db = getDB();
 
 try {

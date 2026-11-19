@@ -4,10 +4,9 @@
  *
  * Numbers were saved exactly as typed, so the same person can be in the table
  * twice - 01712345678 from the POS customer form and 8801712345678 from the
- * Marketing page, which has always normalised. That matters because the WhatsApp
- * check, the campaign audience and the receipt link all key on the number: a
- * customer stored the short way is invisible to every one of them, and a search
- * misses them.
+ * Marketing page, which has always normalised. That matters because the campaign
+ * audience and the receipt link both key on the number: a customer stored the
+ * short way is invisible to every one of them, and a search misses them.
  *
  * Dry run by default. Read the report, then pass --apply to write. There is no
  * undo beyond a backup, which is why the dry run lists exactly what would change
@@ -101,7 +100,7 @@ if (!$apply) {
 // shop ends up with a duplicate, so the duplicate is reported rather than
 // silently merged or silently kept. Deciding what to do about it is the shop's
 // call, not this script's.
-$up = $db->prepare("UPDATE customers SET phone = ?, has_whatsapp = NULL, whatsapp_checked_at = NULL
+$up = $db->prepare("UPDATE customers SET phone = ?
                     WHERE id = ? AND owner_id = ?");
 $done = 0;
 $failed = [];
@@ -147,8 +146,6 @@ if (!$dupes) {
         echo "  {$d['phone']}  x{$d['n']}  ids: {$d['ids']}\n";
     }
     echo "\n  These are the same person recorded twice under different forms.\n";
-    echo "  The WhatsApp badge on each was cleared, so run Marketing -> Check numbers\n";
-    echo "  once the shop decides which row to keep.\n";
 }
 
-echo "\nDone. Run Marketing -> Check numbers to fill in the WhatsApp badges.\n";
+echo "\nDone.\n";

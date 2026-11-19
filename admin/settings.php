@@ -5,26 +5,123 @@
  */
 
 require_once '../config/db.php';
-require_once '../config/marketing.php';
+require_once '../config/auth_otp.php';
+require_once 'includes/sales-scope.php';
 startSecureSession();
 
-if (!isLoggedIn() || !hasRole('admin')) {
-    redirect('../auth/login.php');
-}
+requirePermission('settings');
 
 define('PAGE_TITLE', 'Settings');
 
 $db = getDB();
 $currentUser = getCurrentUser();
 
-// Owner scoping for the bridge settings, matching the fallback the rest of the
-// app uses. Without it, a user row with no owner_id would read and write the
-// bridge settings under NULL and the panel would always look unconfigured.
-$bridgeOwnerId = $currentUser['owner_id'] ?? $currentUser['id'];
+// Owner scoping for the settings this page reads and writes, matching the
+// fallback the rest of the app uses. Without it, a user row with no owner_id
+// would read and write settings under NULL.
+$ownerId = $currentUser['owner_id'] ?? $currentUser['id'];
 
 // Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
+
+    // The phone number gets two steps of its own, driven by named submit buttons
+    // inside the Shop Information form. It rides in that form rather than a form
+    // of its own because the number being verified is the one the shop just typed
+    // there - a separate form could not read it without making them type it twice.
+    //
+    // Neither step saves anything else on the page: "OTP Pathao" and "Verify" are
+    // not save buttons, and losing half-typed settings because somebody pressed
+    // them would be a bad trade.
+    if ($action === 'update_settings' && isset($_POST['phone_step'])) {
+        $phoneStep = (string)$_POST['phone_step'];
+
+        $pending = (isset($_SESSION['phone_otp_pending']) && is_array($_SESSION['phone_otp_pending']))
+            ? $_SESSION['phone_otp_pending'] : null;
+
+        $shopSettings = [];
+        $st = $db->prepare("SELECT setting_key, setting_value FROM settings WHERE owner_id = ?");
+        $st->execute([$currentUser['owner_id']]);
+        while ($row = $st->fetch()) {
+            $shopSettings[$row['setting_key']] = $row['setting_value'];
+        }
+        // The number that was proved, not the number that is stored: an admin may
+        // have typed a new one into the box since.
+        $verifiedPhone = trim((string)($shopSettings['shop_phone_verified'] ?? ''));
+
+        if ($phoneStep === 'cancel') {
+            unset($_SESSION['phone_otp_pending']);
+            setFlash('info', 'OTP request bat jawa hoise.');
+        } elseif ($phoneStep === 'send') {
+            $phone = otpNormalizePhone($_POST['shop_phone'] ?? '');
+            $heldElsewhere = $phone === '' ? null : otpPhoneTaken($db, $phone, $currentUser['id']);
+
+            if ($phone === '') {
+                setFlash('danger', 'Ekta thik mobile number din (01XXXXXXXXX).');
+            } elseif ($heldElsewhere) {
+                // Named in the message on purpose: "already in use" with no way to
+                // find out who is holding it sends everybody to the Users page to
+                // hunt, and the fix belongs there, on purpose, not here.
+                setFlash('danger', 'Ai number "' . $heldElsewhere['name']
+                    . '" account e already ache. Shekhane theke remove koron agey.');
+            } elseif ($phone === $verifiedPhone) {
+                setFlash('info', 'Ei number ta already verified ache.');
+            } else {
+                $res = otpSendCode($db, $ownerId, $phone, 'link', [
+                    'user_id' => $currentUser['id'],
+                    'app'     => substr(trim((string)($_POST['shop_name'] ?? '')), 0, 30) ?: 'Smart POS',
+                ]);
+                if ($res['ok']) {
+                    $_SESSION['phone_otp_pending'] = ['phone' => $phone, 'at' => time()];
+                    setFlash('success', 'OTP pathano hoise ' . otpMaskPhone($phone)
+                        . ' e. ' . round(OTP_TTL_SECONDS / 60) . ' min er moddhe code ta din.');
+                } else {
+                    setFlash('danger', $res['error']);
+                }
+            }
+        } elseif ($phoneStep === 'verify') {
+            if (empty($pending['phone'])) {
+                setFlash('danger', 'OTP request ta ar nei. Notun kore OTP din.');
+            } else {
+                $chk = otpConsume($db, 'link', $pending['phone'], $_POST['phone_otp_code'] ?? '');
+                if (!$chk['ok']) {
+                    // A wrong code leaves the request standing, because the same
+                    // code may still be entered up to its attempt cap. An expired,
+                    // spent or locked one does not: the next move is a new SMS.
+                    if (!$chk['retryable']) {
+                        unset($_SESSION['phone_otp_pending']);
+                    }
+                    setFlash('danger', $chk['error']);
+                } else {
+                    // The number the spent code was for, taken from the challenge
+                    // rather than from the form - otherwise the box could be
+                    // changed between the two steps and blessed by a code that
+                    // never went to it.
+                    $phone = $chk['phone'];
+                    $heldElsewhere = otpPhoneTaken($db, $phone, $currentUser['id']);
+                    if ($heldElsewhere) {
+                        setFlash('danger', 'OTP thik, kintu ai number ekhon "'
+                            . $heldElsewhere['name'] . '" account e ache.');
+                    } else {
+                        $stmt = $db->prepare("INSERT INTO settings (setting_key, setting_value, owner_id)
+                                              VALUES (?, ?, ?)
+                                              ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+                        foreach (['shop_phone' => $phone, 'shop_phone_verified' => $phone] as $key => $value) {
+                            $stmt->execute([$key, $value, $currentUser['owner_id']]);
+                        }
+                        otpMarkUserPhone($db, $currentUser['id'], $phone);
+                        unset($_SESSION['phone_otp_pending']);
+                        authAudit('phone_link', true, $currentUser['id'], otpMaskPhone($phone),
+                            'shop phone verified with OTP');
+                        setFlash('success', 'Phone number verify hoise! Ei number ta apnar account er '
+                            . 'login number hisebeo save hol.');
+                    }
+                }
+            }
+        }
+
+        redirect('settings.php');
+    }
 
     if ($action === 'update_settings') {
         // System Settings
@@ -46,13 +143,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // to the default and switch it straight back on.
             'auto_send_invoice'          => isset($_POST['auto_send_invoice']) ? 1 : 0,
             'invoice_send_sms'           => isset($_POST['invoice_send_sms']) ? 1 : 0,
-            'invoice_send_whatsapp'      => isset($_POST['invoice_send_whatsapp']) ? 1 : 0,
-            'invoice_sms_whatsapp_only'  => isset($_POST['invoice_sms_whatsapp_only']) ? 1 : 0,
+            'invoice_show_qr'            => isset($_POST['invoice_show_qr']) ? 1 : 0,
+            // Which methods the shop may pay its suppliers with. The purchase
+            // module reads this CSV back (purchasePaymentMethods) and rejects a
+            // payment made any other way, so the list is intersected here against
+            // the methods the database can store - a hand-edited form cannot sneak
+            // in a key that would fail on INSERT later. Ticking nothing saves an
+            // empty value, which the reader treats as "every method" rather than a
+            // purchase form with no payment box.
+            'purchase_payment_methods'   => implode(',', array_keys(array_intersect_key(
+                salesPaymentMethods(),
+                array_flip((array)($_POST['purchase_payment_methods'] ?? []))
+            ))),
         ];
 
         try {
             $stmt = $db->prepare("INSERT INTO settings (setting_key, setting_value, owner_id) VALUES (?, ?, ?) 
                                   ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+
+            // Which number an OTP actually proved, if any. Read here rather than
+            // from the $settings list below, which is loaded after the save.
+            $provedPhone = '';
+            $vp = $db->prepare("SELECT setting_value FROM settings
+                                WHERE owner_id = ? AND setting_key = 'shop_phone_verified' LIMIT 1");
+            $vp->execute([$currentUser['owner_id']]);
+            $provedPhone = trim((string)$vp->fetchColumn());
+
+            // A number typed over a proved one is no longer the proved number. The
+            // shop still gets to save it - it is business information that prints
+            // on an invoice, and a shop with no SMS gateway has no way to prove it -
+            // but the green tick goes with it, because a tick against digits nobody
+            // checked is the one thing this field must never be.
+            if (otpNormalizePhone($settingsData['shop_phone']) !== $provedPhone) {
+                $settingsData['shop_phone_verified'] = '';
+            }
 
             foreach ($settingsData as $key => $value) {
                 $stmt->execute([$key, $value, $currentUser['owner_id']]);
@@ -61,50 +185,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             setFlash('success', 'System settings saved successfully!');
         } catch (PDOException $e) {
             setFlash('danger', 'Error saving settings.');
-        }
-    } elseif ($action === 'save_bridge') {
-        // The WhatsApp bridge connection. Saved and tested together, because
-        // saving a URL that nothing is listening on is the normal case here -
-        // the tunnel is often not up yet - and reporting that as a failed save
-        // would only make someone retype the same correct value.
-        //
-        // whatsapp-server/SETUP-SHOP-PC.md sends the reader to "Settings, the
-        // Marketing / WhatsApp panel". This is that panel; the Inbox page has
-        // the same fields, so a shop can fix the link from either side.
-        //
-        // Agent mode is passed as a constant, not read from the form. The mode
-        // select and the two tunnel fields are gone from this card, so there is
-        // nothing left to read - and marketingSaveBridgeSettings() treats
-        // anything that is not exactly the agent mode as the direct arrangement.
-        // Left to a missing $_POST it would fall through and try to save a bridge
-        // URL instead, which fails on the empty one: this card could then never
-        // save a working agent token again, and the shop would be told to type a
-        // tunnel address it does not need. A shop that genuinely needs the
-        // tunnel still has the full form on the Inbox page.
-        $bridgeSaved = marketingSaveBridgeSettings(
-            $bridgeOwnerId,
-            '',
-            '',
-            WA_AGENT_MODE,
-            $_POST['agent_token'] ?? ''
-        );
-
-        if (!$bridgeSaved['ok']) {
-            setFlash('danger', $bridgeSaved['error']);
-        } else {
-            $bridgeTest = marketingTestBridgeConnection($bridgeOwnerId);
-            if ($bridgeTest['connected']) {
-                setFlash('success', 'Agent mode save hoye gelo. WhatsApp connected'
-                    . ($bridgeTest['me'] ? ' as ' . $bridgeTest['me'] : '') . '.');
-            } else {
-                // The only remaining answer. Agent mode cannot report "working"
-                // at the instant it is saved, because the bridge has not polled
-                // yet - so this is the expected result, not a failure, and the
-                // hint is what tells the shop what to do next.
-                setFlash('warning', 'Agent mode save hoye gelo. Bridge chaltese nijei theke '
-                    . 'report dewa hobe - ektu porjonto wait korun. '
-                    . ($bridgeTest['hint'] ?: $bridgeTest['error']));
-            }
         }
     } elseif ($action === 'update_profile') {
         // Profile Settings
@@ -155,6 +235,21 @@ while ($row = $stmt->fetch()) {
     $settings[$row['setting_key']] = $row['setting_value'];
 }
 
+// How far along the phone number's OTP is, which is the only thing that decides
+// whether the box says Verified, offers "OTP Pathao", or asks for a code that is
+// already on its way.
+$verifiedPhone = trim((string)($settings['shop_phone_verified'] ?? ''));
+$phonePending = (isset($_SESSION['phone_otp_pending']) && is_array($_SESSION['phone_otp_pending']))
+    ? $_SESSION['phone_otp_pending'] : null;
+// A request past the life of its own code is not a request. Leaving the box up
+// would invite somebody to type a code that can no longer be spent, and be told
+// they are wrong when they are not.
+if ($phonePending && (time() - (int)($phonePending['at'] ?? 0)) > OTP_TTL_SECONDS + 30) {
+    $phonePending = null;
+    unset($_SESSION['phone_otp_pending']);
+}
+$otpGatewayReady = otpTransportAvailable($ownerId);
+
 include 'includes/header.php';
 ?>
 
@@ -168,7 +263,7 @@ include 'includes/header.php';
     </div>
 <?php endif; ?>
 
-<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem;">
+<div class="settings-layout">
 
     <!-- Left Column: System Settings -->
     <div>
@@ -193,11 +288,60 @@ include 'includes/header.php';
                             rows="2"><?php echo sanitize($settings['shop_address'] ?? ''); ?></textarea>
                     </div>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="cols-2" style="gap: 1rem;">
                         <div class="form-group">
-                            <label class="form-label">Phone Number</label>
-                            <input type="text" name="shop_phone" class="form-control"
+                            <label class="form-label">
+                                Phone Number
+                                <?php if ($verifiedPhone !== ''): ?>
+                                    <span class="badge badge-success">
+                                        <i class="fas fa-check-circle"></i> Verified
+                                    </span>
+                                <?php else: ?>
+                                    <span class="badge badge-warning">Unverified</span>
+                                <?php endif; ?>
+                            </label>
+                            <input type="text" name="shop_phone" class="form-control" inputmode="tel"
                                 value="<?php echo sanitize($settings['shop_phone'] ?? ''); ?>">
+
+                            <?php if (!$otpGatewayReady): ?>
+                                <small class="text-muted">
+                                    OTP pete SMS gateway lagbe - Marketing &amp; SMS page e apnar SMS
+                                    provider setup korun, tarpor ei number ta verify kora jabe.
+                                </small>
+                            <?php elseif ($phonePending): ?>
+                                <?php // No required or pattern here: this input lives inside the big
+                                    // settings form, and a client-side constraint on it would stop the
+                                    // Save button working while a code is waiting to be typed. ?>
+                                <div style="display:flex; gap:.5rem; align-items:center;
+                                            flex-wrap:wrap; margin-top:.5rem;">
+                                    <input type="text" name="phone_otp_code" class="form-control"
+                                        style="width:9rem;" placeholder="6 digit code"
+                                        maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+                                    <button type="submit" name="phone_step" value="verify"
+                                        class="btn btn-sm btn-primary">
+                                        <i class="fas fa-shield-alt"></i> Verify Korun
+                                    </button>
+                                    <button type="submit" name="phone_step" value="send"
+                                        class="btn btn-sm btn-outline">Notun OTP</button>
+                                    <button type="submit" name="phone_step" value="cancel"
+                                        class="btn btn-sm btn-secondary">Bat din</button>
+                                </div>
+                                <small class="text-muted">
+                                    Code ta <?php echo sanitize(otpMaskPhone($phonePending['phone'])); ?>
+                                    e geche - din, tarpor Verify korun. Save korle notun code lagbe.
+                                </small>
+                            <?php else: ?>
+                                <div style="margin-top:.5rem;">
+                                    <button type="submit" name="phone_step" value="send"
+                                        class="btn btn-sm btn-secondary">
+                                        <i class="fas fa-mobile-alt"></i> OTP Pathao
+                                    </button>
+                                </div>
+                                <small class="text-muted">
+                                    Number change korle notun number e OTP ashbe, seta verify korlei
+                                    number ta save hobe apnar account er login number hisebe.
+                                </small>
+                            <?php endif; ?>
                         </div>
 
                         <div class="form-group">
@@ -236,15 +380,17 @@ include 'includes/header.php';
                 </div>
                 <div class="card-body">
                     <p class="text-muted" style="margin-top:0;">
-                        Sale sesh hoile customer er number e invoice automatically pathay.
-                        SMS e text hisabe jay, WhatsApp e bill-er chobi.
+                        Sale sesh hoile customer er number e invoice automatically
+                        SMS hisabe pathay.
                     </p>
 
                     <?php
-                    // A missing row means on, matching what the API assumes. Shown
-                    // checked so the page agrees with the behaviour.
-                    $invOn = function ($key) use ($settings) {
-                        $v = $settings[$key] ?? '1';
+                    // A missing row means on, matching what the API assumes - except
+                    // for the opt-in rows listed in $invOff, which cost money or
+                    // restrict delivery and so start closed until the shop asks.
+                    $invOff = [];
+                    $invOn = function ($key) use ($settings, $invOff) {
+                        $v = $settings[$key] ?? (in_array($key, $invOff, true) ? '0' : '1');
                         return !($v === '0' || $v === 0 || $v === '');
                     };
                     ?>
@@ -269,22 +415,7 @@ include 'includes/header.php';
                                 <strong>SMS e pathao</strong><br>
                                 <small class="text-muted">
                                     Invoice text hisabe jay - bill er chobi SMS e jay na.
-                                    Protita SMS er credit lage. Gateway configure kora thakle kaj kore.
-                                </small>
-                            </span>
-                        </label>
-                    </div>
-
-                    <div class="form-group" style="margin-bottom:0.75rem;">
-                        <label style="display:flex; align-items:flex-start; gap:0.6rem; cursor:pointer;">
-                            <input type="checkbox" name="invoice_send_whatsapp" value="1"
-                                <?php echo $invOn('invoice_send_whatsapp') ? 'checked' : ''; ?>
-                                style="margin-top:0.2rem;">
-                            <span>
-                                <strong>WhatsApp e pathao</strong><br>
-                                <small class="text-muted">
-                                    Bill er chobi (image) WhatsApp e jay. WhatsApp QR scan
-                                    kora thakte hoy.
+                                    Gateway configure kora thakle kaj kore; kono package kinle na.
                                 </small>
                             </span>
                         </label>
@@ -292,18 +423,65 @@ include 'includes/header.php';
 
                     <div class="form-group" style="margin-bottom:1rem;">
                         <label style="display:flex; align-items:flex-start; gap:0.6rem; cursor:pointer;">
-                            <input type="checkbox" name="invoice_sms_whatsapp_only" value="1"
-                                <?php echo $invOn('invoice_sms_whatsapp_only') ? 'checked' : ''; ?>
+                            <input type="checkbox" name="invoice_show_qr" value="1"
+                                <?php echo $invOn('invoice_show_qr') ? 'checked' : ''; ?>
                                 style="margin-top:0.2rem;">
                             <span>
-                                <strong>Sudhu ja check kora number e pathao</strong><br>
+                                <strong>Invoice e QR dekhai</strong><br>
                                 <small class="text-muted">
-                                    Apni ja bolechen: number e WhatsApp thaklei pathabe.
-                                    Check hoy nai number gulor jonno SMS jabe na - Marketing
-                                    page theke number check kora jay.
+                                    QR ta Facebook page er link - seta
+                                    <em>Voucher Settings</em> e change kora jay.
+                                    Off korle bill e ar QR ashbe na.
                                 </small>
                             </span>
                         </label>
+                    </div>
+
+                    <div class="text-right">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Save System Settings
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <!-- Supplier Payment Methods -->
+            <div class="card" style="margin-top: 1.5rem;">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="fas fa-truck-ramp-box"></i> Supplier Payment Methods</h3>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted" style="margin-top:0;">
+                        Purchase entry, supplier payment ar return form e ei method gulo ashbe.
+                        Jeta rakben na seta supplier ke dite parben na - balance ar report ar kichu change hobe na.
+                    </p>
+
+                    <?php
+                    $puAll = salesPaymentMethods();
+                    $puSaved = array_filter(array_map('trim',
+                        explode(',', (string)($settings['purchase_payment_methods'] ?? ''))));
+                    // No stored list means the shop never chose, and the purchase
+                    // module offers every method - so the box shows every method
+                    // ticked rather than an empty set that means the same thing.
+                    $puOn = function ($key) use ($puSaved, $puAll) {
+                        if (empty($puSaved)) {
+                            return true;
+                        }
+                        return in_array($key, $puSaved, true);
+                    };
+                    ?>
+                    <div class="form-group" style="margin-bottom:1rem;">
+                        <?php foreach ($puAll as $key => $label): ?>
+                            <label style="display:inline-flex; align-items:center; gap:0.45rem;
+                                           cursor:pointer; margin:0 1.1rem 0.5rem 0;">
+                                <input type="checkbox" name="purchase_payment_methods[]"
+                                       value="<?php echo $key; ?>"
+                                       <?php echo $puOn($key) ? 'checked' : ''; ?>>
+                                <span><?php echo $label; ?></span>
+                            </label>
+                        <?php endforeach; ?>
+                        <small class="text-muted" style="display:block; margin-top:0.35rem;">
+                            Sob deselect korle abar sob method phirbe (eta default).
+                        </small>
                     </div>
 
                     <div class="text-right">
@@ -324,85 +502,6 @@ include 'includes/header.php';
                         <textarea name="voucher_terms" class="form-control" rows="4"
                             placeholder="e.g. 1. This voucher is valid for 30 days. 2. Not redeemable for cash."><?php echo sanitize($settings['voucher_terms'] ?? ''); ?></textarea>
                         <small class="text-muted">These terms will be printed on the invoice</small>
-                    </div>
-                </div>
-            </div>
-        </form>
-
-        <!-- WhatsApp Bridge.
-             A separate form, not another card inside the settings form above:
-             it saves different rows, to a different helper, and folding it in
-             would mean saving shop name and bridge token as one operation. -->
-        <?php
-        // Live state, so the card can say what is wrong rather than just
-        // offering two empty boxes. Safe to call even when nothing is
-        // configured - that is one of the states it reports.
-        $bridgeState = marketingGetBridgeStatus($bridgeOwnerId);
-        ?>
-        <form method="POST">
-            <input type="hidden" name="action" value="save_bridge">
-            <div class="card" style="margin-top: 1.5rem;">
-                <div class="card-header">
-                    <h3 class="card-title"><i class="fab fa-whatsapp"></i> WhatsApp Bridge</h3>
-                </div>
-                <div class="card-body">
-
-                    <?php if ($bridgeState['connected']): ?>
-                        <div class="alert alert-success" style="margin-top:0;">
-                            <i class="fas fa-check-circle"></i>
-                            Connected<?php echo $bridgeState['me']['name'] ? ' as ' . sanitize($bridgeState['me']['name']) : ''; ?>.
-                            <a href="whatsapp-inbox.php">Inbox kholun</a>.
-                        </div>
-                    <?php elseif ($bridgeState['configured']): ?>
-                        <div class="alert alert-warning" style="margin-top:0;">
-                            <i class="fas fa-exclamation-circle"></i>
-                            <?php echo sanitize($bridgeState['error'] ?: 'Bridge theke uttor ashche na.'); ?>
-                            <?php if (!empty($bridgeState['hint'])): ?>
-                                <br><small><?php echo sanitize($bridgeState['hint']); ?></small>
-                            <?php endif; ?>
-                        </div>
-                    <?php else: ?>
-                        <div class="alert alert-info" style="margin-top:0;">
-                            <i class="fas fa-info-circle"></i>
-                            Agent token dewa hoye ni. Bridge er <code>.env</code>
-                            file er <code>AGENT_TOKEN</code> value ta niche bosiye
-                            Save korun - WhatsApp campaign o WhatsApp invoice
-                            cholbe na, SMS cholbe.
-                        </div>
-                    <?php endif; ?>
-
-                    <!-- Agent token. The only field left in this card.
-
-                         The mode select and the two tunnel fields (Bridge URL,
-                         API token) were removed. In agent mode the bridge dials
-                         the POS, so there is no address for the shop to type and
-                         no second token to keep in step with the first - and a
-                         card that asks for values this arrangement never uses is
-                         a card that gets filled in wrong and then blamed.
-
-                         A shop that does need the tunnel still has the full form
-                         on the Inbox page, under Bridge setup.
-
-                         The token is never echoed back. Left blank it keeps
-                         whatever is already saved, so this card cannot quietly
-                         erase a working token. -->
-                    <div class="form-group">
-                        <label class="form-label">Agent token</label>
-                        <input type="password" name="agent_token" class="form-control" value=""
-                            placeholder="<?php echo $bridgeState['configured'] ? 'Chalu ache - bondho rakhle othe' : 'whatsapp-server\.env er AGENT_TOKEN'; ?>">
-                        <small class="text-muted">
-                            Bridge er <code>.env</code> file er <code>AGENT_TOKEN</code>
-                            value ta - <code>API_TOKEN</code> er cheye alada.
-                            Bridge nijei ei POS e call kore, tai kono bridge URL
-                            ba domain lagbe na. Steps:
-                            <code>whatsapp-server\AGENT-MODE.md</code>
-                        </small>
-                    </div>
-
-                    <div class="text-right">
-                        <button type="submit" class="btn btn-primary">
-                            <i class="fas fa-save"></i> Save &amp; Test Connection
-                        </button>
                     </div>
                 </div>
             </div>
@@ -450,15 +549,7 @@ include 'includes/header.php';
 
         </div>
 
-        <div class="card" style="margin-top: 1.5rem;">
-            <div class="card-body">
-                <h4 style="margin-top:0;">Database Info</h4>
-                <p style="font-size: 0.9rem; margin-bottom: 0.5rem;"><strong>Host:</strong> <?php echo DB_HOST; ?></p>
-                <p style="font-size: 0.9rem; margin-bottom: 0.5rem;"><strong>Database:</strong> <?php echo DB_NAME; ?>
-                </p>
-                <p style="font-size: 0.9rem; margin-bottom: 0;"><strong>User:</strong> <?php echo DB_USER; ?></p>
-            </div>
-        </div>
+
 
     </div>
 </div>

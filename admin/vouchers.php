@@ -2,9 +2,7 @@
 require_once '../config/db.php';
 startSecureSession();
 
-if (!isLoggedIn() || !hasRole('admin')) {
-    redirect('../auth/login.php');
-}
+requirePermission('vouchers');
 
 redirect('dashboard.php');
 exit;

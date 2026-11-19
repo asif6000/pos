@@ -5,6 +5,7 @@
  */
 
 require_once '../config/db.php';
+require_once '../config/product_variables.php';
 startSecureSession();
 
 if (!isLoggedIn()) {
@@ -18,9 +19,143 @@ $currentUser = getCurrentUser();
 $error = '';
 $success = '';
 
-// Role-based access: only admin role (super admin + sub admin) can assign products to stores
-$isSuperAdmin = ($currentUser['role'] === 'admin' && empty($currentUser['owner_id']));
-$canAssignStore = ($currentUser['role'] === 'admin');
+// Product images: make sure the column exists. appSafeDdl swallows the duplicate
+// -column error, so this is a cheap no-op after the first run and lets the feature
+// self-install on any environment without a separate migration step.
+appSafeDdl($db, "ALTER TABLE products ADD COLUMN image VARCHAR(255) NULL");
+
+// Who supplied the product. Nullable and unchecked at the DB level because the
+// suppliers list is optional on the form - most existing products have none.
+appSafeDdl($db, "ALTER TABLE products ADD COLUMN supplier_id INT NULL");
+
+// The Size / Colour / Unit lists. Idempotent, and seeds the defaults on a shop
+// that has never opened the Variables page.
+productVariablesEnsureTables($db);
+
+// Role-based access: admin and manager roles can assign products to stores
+//
+// The shared test, not a local spelling of it. An empty owner column describes a
+// shop's own keeper as easily as the platform account, and the super-admin branches
+// below (all categories, all stores, no owner filter on the product list) are
+// exactly the doors that must not open for a shopkeeper. isSuperAdminUser() also
+// asks whether the account owns a shop, so only the platform account gets them.
+$isSuperAdmin = isSuperAdminUser($currentUser);
+$canAssignStore = in_array($currentUser['role'], ['admin', 'manager'], true);
+
+/**
+ * Validate and store an uploaded product image.
+ *
+ * The file is accepted only if getimagesize() confirms it is a real image, and the
+ * saved name is generated on the server from the detected MIME type - the browser's
+ * filename and extension are never used. That closes the "rename shell.php to
+ * .jpg" and "fake the Content-Type" paths. Returns ['path' => relPath|null, 'error' => msg|null];
+ * a null path with no error simply means nothing was uploaded.
+ */
+function storeProductImage($file)
+{
+    $result = ['path' => null, 'error' => null];
+    if (!is_array($file) || !isset($file['error']) || $file['error'] === UPLOAD_ERR_NO_FILE) {
+        return $result;
+    }
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        $result['error'] = 'Image upload failed. Please try again.';
+        return $result;
+    }
+    if ($file['size'] > 2 * 1024 * 1024) {
+        $result['error'] = 'Image must be 2 MB or smaller.';
+        return $result;
+    }
+    $info = @getimagesize($file['tmp_name']);
+    $extMap = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+    if ($info === false || !isset($extMap[$info['mime'] ?? ''])) {
+        $result['error'] = 'Only JPG, PNG, WEBP or GIF images are allowed.';
+        return $result;
+    }
+    $dir = __DIR__ . '/../assets/img/products';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0755, true);
+    }
+    $name = 'p' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $extMap[$info['mime']];
+    if (!move_uploaded_file($file['tmp_name'], $dir . '/' . $name)) {
+        $result['error'] = 'Could not save the image. Please try again.';
+        return $result;
+    }
+    $result['path'] = 'assets/img/products/' . $name;
+    return $result;
+}
+
+/**
+ * Delete a stored product image, but only if it really lives inside the products
+ * folder (resolved path is checked against the folder) so a tampered DB value can
+ * never turn this into an arbitrary file delete.
+ */
+function deleteProductImage($relPath)
+{
+    if (empty($relPath)) {
+        return;
+    }
+    $base = realpath(__DIR__ . '/../assets/img/products');
+    $full = realpath(__DIR__ . '/../' . $relPath);
+    if ($base && $full && strpos($full, $base) === 0 && is_file($full)) {
+        @unlink($full);
+    }
+}
+
+/**
+ * Barcode for a product saved without one, in the shape the shop already uses:
+ * the letters it prefixes its own codes with, plus the next number after the
+ * highest one it has (SC2237777 -> SC2237778). A shop with no lettered barcode
+ * yet takes its initials from Settings > Shop name, so even the first generated
+ * code looks like it belongs to the shop.
+ *
+ * `barcode` is UNIQUE across every shop, so a candidate another shop already
+ * holds is nudged forward until a free one is found.
+ */
+function productAutoBarcode($db, $productId, $ownerId)
+{
+    $prefix = '';
+    $highest = 0;
+
+    $stmt = $db->prepare("SELECT barcode FROM products
+                          WHERE owner_id = ? AND barcode REGEXP '^[A-Za-z]+[0-9]+$'");
+    $stmt->execute([$ownerId]);
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $code) {
+        if (!preg_match('/^([A-Za-z]+)([0-9]+)$/', $code, $m)) {
+            continue;
+        }
+        if ($prefix === '' || (int) $m[2] > $highest) {
+            $prefix = strtoupper($m[1]);
+            $highest = (int) $m[2];
+        }
+    }
+
+    if ($prefix === '') {
+        $stmt = $db->prepare("SELECT setting_value FROM settings
+                              WHERE setting_key = 'shop_name' AND owner_id = ? LIMIT 1");
+        $stmt->execute([$ownerId]);
+        $words = preg_split('/[^A-Za-z0-9]+/', (string) $stmt->fetchColumn(), -1, PREG_SPLIT_NO_EMPTY);
+        foreach (array_slice($words, 0, 3) as $word) {
+            $prefix .= mb_strtoupper(mb_substr($word, 0, 1));
+        }
+        if ($prefix === '') {
+            $prefix = 'P';
+        }
+    }
+
+    $chk = $db->prepare("SELECT id FROM products WHERE barcode = ? AND id != ?");
+    $tries = 0;
+    for ($n = ($highest > 0 ? $highest : (int) $productId) + 1; $tries < 500; $n++, $tries++) {
+        $candidate = $prefix . $n;
+        $chk->execute([$candidate, (int) $productId]);
+        if (!$chk->fetchColumn()) {
+            return $candidate;
+        }
+    }
+
+    // The whole run was taken; a random number behind the same prefix is still
+    // scannable, and the UNIQUE index keeps it honest.
+    return $prefix . random_int(1000000, 9999999);
+}
 
 // Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -35,23 +170,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sell_price = (float) ($_POST['sell_price'] ?? 0);
         $stock = (int) ($_POST['stock'] ?? 0);
         $min_stock = (int) ($_POST['min_stock'] ?? 10);
-        $unit = sanitize($_POST['unit'] ?? 'piece');
+        $unit = sanitize($_POST['unit'] ?? '') ?: 'piece';
         $comment = sanitize($_POST['comment'] ?? '');
         $status = sanitize($_POST['status'] ?? 'active');
+        $supplier_id = (int) ($_POST['supplier_id'] ?? 0);
+
+        // Size / Colour etc. Keyed by variable id; 0 means "left blank", which is
+        // allowed for every one of them.
+        $rawSelections = $_POST['variable'] ?? [];
+        $selections = [];
+        if (is_array($rawSelections)) {
+            foreach ($rawSelections as $varId => $valueId) {
+                $selections[(int) $varId] = (int) $valueId;
+            }
+        }
+
+        $postOwnerId = !empty($currentUser['owner_id']) ? (int)$currentUser['owner_id'] : (int)$currentUser['id'];
+
+        // Suppliers belong to a shop; only accept one this owner actually has.
+        $stmt_supplier_ok = false;
+        if ($supplier_id) {
+            $chk = $db->prepare("SELECT id FROM suppliers WHERE id = ? AND owner_id = ? AND status = 'active'");
+            $chk->execute([$supplier_id, $postOwnerId]);
+            $stmt_supplier_ok = (bool) $chk->fetchColumn();
+        }
 
         // Validation
         if (empty($name)) {
             $error = 'Product name is required.';
         } elseif ($sell_price <= 0) {
             $error = 'Sell price must be greater than 0.';
+        } elseif ($supplier_id && !$stmt_supplier_ok) {
+            // A supplier id that is not this shop's is either stale or crafted -
+            // store nothing rather than silently linking to another owner's row.
+            $supplier_id = 0;
         } else {
+            // Optional image upload is validated and stored before the transaction
+            // opens, so a rejected file never leaves a half-written product behind.
+            $newImagePath = null;
+            $uploaded = storeProductImage($_FILES['image'] ?? null);
+            $removeImage = (($_POST['remove_image'] ?? '') === '1');
+
+            if ($uploaded['error']) {
+                $error = $uploaded['error'];
+            } else {
+            $newImagePath = $uploaded['path'];
             try {
                 if ($action === 'add') {
                     $ownerId = !empty($currentUser['owner_id']) ? (int)$currentUser['owner_id'] : (int)$currentUser['id'];
                     $db->beginTransaction();
-                    $stmt = $db->prepare("INSERT INTO products (name, barcode, category_id, buy_price, sell_price, stock, min_stock, unit, comment, status, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                    $stmt->execute([$name, $barcode ?: null, $category_id ?: null, $buy_price, $sell_price, $stock, $min_stock, $unit, $comment ?: null, $status, $ownerId]);
+                    $stmt = $db->prepare("INSERT INTO products (name, barcode, category_id, buy_price, sell_price, stock, min_stock, unit, comment, status, owner_id, image, supplier_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->execute([$name, $barcode ?: null, $category_id ?: null, $buy_price, $sell_price, $stock, $min_stock, $unit, $comment ?: null, $status, $ownerId, $newImagePath ?: null, $supplier_id ?: null]);
                     $newProductId = $db->lastInsertId();
+                    $barcodeWasAuto = ($barcode === '');
+                    if ($barcodeWasAuto) {
+                        $barcode = productAutoBarcode($db, (int) $newProductId, $ownerId);
+                        $stmt = $db->prepare("UPDATE products SET barcode = ? WHERE id = ?");
+                        $stmt->execute([$barcode, $newProductId]);
+                    }
+                    saveProductVariableMap($db, (int)$newProductId, $selections);
 
                     // Determine Store ID (admin can assign; super admin can pick any store, sub-admin only their own)
                     if ($canAssignStore) {
@@ -102,17 +279,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute([$newProductId, $stock, $currentUser['id']]);
 
                     $db->commit();
-                    $success = 'Product added successfully!';
+                    $success = $barcodeWasAuto
+                        ? 'Product added successfully! Barcode ' . $barcode . ' was generated automatically.'
+                        : 'Product added successfully!';
                 } else {
+                    // Work out the final image: a fresh upload wins, else "remove"
+                    // clears it, else the existing file is kept.
+                    $cur = $db->prepare("SELECT image, barcode FROM products WHERE id = ?");
+                    $cur->execute([$id]);
+                    $current = $cur->fetch();
+                    $currentImage = $current['image'] ?: null;
+                    if ($newImagePath) {
+                        $finalImage = $newImagePath;
+                    } elseif ($removeImage) {
+                        $finalImage = null;
+                    } else {
+                        $finalImage = $currentImage;
+                    }
+
+                    // A blank barcode field means "I did not touch it", not "delete it" -
+                    // keep what the product already has, and give it one if it never had.
+                    $finalBarcode = $barcode !== '' ? $barcode : trim((string) ($current['barcode'] ?? ''));
+                    $barcodeWasAuto = false;
+                    if ($finalBarcode === '') {
+                        $finalBarcode = productAutoBarcode($db, $id, $postOwnerId);
+                        $barcodeWasAuto = true;
+                    }
+
                     $db->beginTransaction();
-                    $stmt = $db->prepare("UPDATE products SET name=?, barcode=?, category_id=?, buy_price=?, sell_price=?, stock=?, min_stock=?, unit=?, comment=?, status=? WHERE id=?");
-                    $stmt->execute([$name, $barcode ?: null, $category_id ?: null, $buy_price, $sell_price, $stock, $min_stock, $unit, $comment ?: null, $status, $id]);
+                    $stmt = $db->prepare("UPDATE products SET name=?, barcode=?, category_id=?, buy_price=?, sell_price=?, stock=?, min_stock=?, unit=?, comment=?, status=?, image=?, supplier_id=? WHERE id=?");
+                    $stmt->execute([$name, $finalBarcode, $category_id ?: null, $buy_price, $sell_price, $stock, $min_stock, $unit, $comment ?: null, $status, $finalImage, $supplier_id ?: null, $id]);
+                    saveProductVariableMap($db, (int)$id, $selections);
 
                     $stmt = $db->prepare("UPDATE store_stocks SET quantity = ? WHERE product_id = ?");
                     $stmt->execute([$stock, $id]);
 
                     $db->commit();
-                    $success = 'Product updated successfully!';
+                    if ($currentImage && $currentImage !== $finalImage) {
+                        deleteProductImage($currentImage);
+                    }
+                    $success = $barcodeWasAuto
+                        ? 'Product updated successfully! Barcode ' . $finalBarcode . ' was generated automatically.'
+                        : 'Product updated successfully!';
                 }
                 } catch (Exception $e) {
                     if ($db->inTransaction()) { $db->rollBack(); }
@@ -122,6 +330,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $error = 'Error: ' . $e->getMessage();
                     }
                 }
+            }
         }
     } elseif ($action === 'delete') {
         $id = (int) ($_POST['id'] ?? 0);
@@ -130,6 +339,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $db->exec("SET FOREIGN_KEY_CHECKS = 0");
 
             $db->prepare("DELETE FROM store_stocks WHERE product_id = ?")->execute([$id]);
+            $db->prepare("DELETE FROM product_variable_map WHERE product_id = ?")->execute([$id]);
             $db->prepare("DELETE FROM stock_history WHERE product_id = ?")->execute([$id]);
             $db->prepare("DELETE FROM sale_items WHERE product_id = ?")->execute([$id]);
             $db->prepare("DELETE FROM return_items WHERE product_id = ?")->execute([$id]);
@@ -193,6 +403,15 @@ if ($userStoreId) {
     $scope_store_id = $userStoreId;
     $isGlobalView = false;
 } else {
+    // Non-super-admin (e.g. manager): a picked store must belong to their own
+    // shop, otherwise the Store View silently falls back to the global list.
+    if ($view_store_id > 0 && !$isSuperAdmin) {
+        $stmt = $db->prepare("SELECT id FROM stores WHERE id = ? AND owner_id = ?");
+        $stmt->execute([$view_store_id, $ownerId]);
+        if (!$stmt->fetchColumn()) {
+            $view_store_id = 0;
+        }
+    }
     if ($view_store_id > 0) {
         $scope_store_id = $view_store_id;
         $isGlobalView = false;
@@ -204,56 +423,110 @@ if ($userStoreId) {
 
 // Select products with joined store_stocks - Super admin sees all, others filter by owner
 if ($isGlobalView) {
-    $sql = "SELECT p.*, c.name as category_name, COALESCE(SUM(ss.quantity), 0) as current_stock,
-            GROUP_CONCAT(DISTINCT CONCAT(st.name, '::', ss.store_id, '::', ss.quantity) SEPARATOR '||') as store_list
-            FROM products p 
+    $from = " FROM products p 
             LEFT JOIN categories c ON p.category_id = c.id 
             LEFT JOIN store_stocks ss ON p.id = ss.product_id
-            LEFT JOIN stores st ON ss.store_id = st.id
-            WHERE 1=1";
-    $groupBy = " GROUP BY p.id";
+            LEFT JOIN stores st ON ss.store_id = st.id";
+    $stockCol = "COALESCE(SUM(ss.quantity), 0)";
     $params = [];
-    if (!$isSuperAdmin) {
-        $sql .= " AND p.owner_id = ?";
-        $params[] = $ownerId;
-    }
 } else {
-    $sql = "SELECT p.*, c.name as category_name, COALESCE(ss.quantity, 0) as current_stock,
-            GROUP_CONCAT(DISTINCT CONCAT(st.name, '::', ss.store_id, '::', ss.quantity) SEPARATOR '||') as store_list
-            FROM products p 
+    $from = " FROM products p 
             LEFT JOIN categories c ON p.category_id = c.id 
             JOIN store_stocks ss ON p.id = ss.product_id AND ss.store_id = ?
-            LEFT JOIN stores st ON ss.store_id = st.id
-            WHERE 1=1";
-    $groupBy = " GROUP BY p.id";
+            LEFT JOIN stores st ON ss.store_id = st.id";
+    $stockCol = "COALESCE(ss.quantity, 0)";
     $params = [$scope_store_id];
-    if (!$isSuperAdmin) {
-        $sql .= " AND p.owner_id = ?";
-        $params[] = $ownerId;
-    }
+}
+
+$where = " WHERE 1=1";
+if (!$isSuperAdmin) {
+    $where .= " AND p.owner_id = ?";
+    $params[] = $ownerId;
 }
 
 if ($search) {
-    $sql .= " AND (p.name LIKE ? OR p.barcode LIKE ?)";
+    $where .= " AND (p.name LIKE ? OR p.barcode LIKE ?)";
     $params[] = "%$search%";
     $params[] = "%$search%";
 }
 
 if ($category) {
-    $sql .= " AND p.category_id = ?";
+    $where .= " AND p.category_id = ?";
     $params[] = $category;
 }
 
 if ($status_filter) {
-    $sql .= " AND p.status = ?";
+    $where .= " AND p.status = ?";
     $params[] = $status_filter;
 }
 
-$sql .= $groupBy . " ORDER BY p.created_at DESC";
+// Sorting. Only these keys are ever interpolated into ORDER BY, so nothing the
+// visitor sends can reach the SQL itself.
+$sortable = [
+    'name' => 'p.name',
+    'barcode' => 'p.barcode',
+    'category' => 'c.name',
+    'buy_price' => 'p.buy_price',
+    'sell_price' => 'p.sell_price',
+    'stock' => 'current_stock',
+    'status' => 'p.status',
+];
+$sort = isset($_GET['sort']) && isset($sortable[$_GET['sort']]) ? $_GET['sort'] : '';
+$dir = strtolower($_GET['dir'] ?? 'asc') === 'desc' ? 'desc' : 'asc';
+
+// One page of the list, plus the total the footer reports.
+$perPage = 20;
+$stmt = $db->prepare("SELECT COUNT(DISTINCT p.id)$from$where");
+$stmt->execute($params);
+$totalFiltered = (int)$stmt->fetchColumn();
+$totalPages = max(1, (int)ceil($totalFiltered / $perPage));
+$page = min(max(1, (int)($_GET['page'] ?? 1)), $totalPages);
+$offset = ($page - 1) * $perPage;
+
+$sql = "SELECT p.*, c.name as category_name, $stockCol as current_stock,
+        GROUP_CONCAT(DISTINCT CONCAT(st.name, '::', ss.store_id, '::', ss.quantity) SEPARATOR '||') as store_list
+        $from$where
+        GROUP BY p.id
+        ORDER BY " . ($sort ? $sortable[$sort] . ' ' . strtoupper($dir) . ', ' : '') . "p.created_at DESC, p.id DESC
+        LIMIT $perPage OFFSET $offset";
 
 $stmt = $db->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
+
+/** Rebuild a products.php URL with the current filters plus these overrides. */
+function productQuery($overrides = [])
+{
+    $q = array_merge($_GET, $overrides);
+    foreach ($q as $k => $v) {
+        if ($v === '' || $v === null) { unset($q[$k]); }
+    }
+    return 'products.php' . ($q ? '?' . http_build_query($q) : '');
+}
+
+/** A sortable column header. $key is already whitelisted in $sortable. */
+$thSort = function ($key, $label) use ($sort, $dir) {
+    $active = $sort === $key;
+    $next = ($active && $dir === 'asc') ? 'desc' : 'asc';
+    ?>
+    <th class="sortable<?php echo $active ? ' active' : ''; ?>">
+        <a href="<?php echo htmlspecialchars(productQuery(['sort' => $key, 'dir' => $next, 'page' => 1])); ?>">
+            <?php echo $label; ?>
+            <i class="fas fa-caret-<?php echo $active && $dir === 'desc' ? 'down' : 'up'; ?> caret"></i>
+        </a>
+    </th>
+    <?php
+};
+
+// Category pills pick a colour from the name, so the same category always
+// looks the same from row to row.
+$catPalette = [
+    ['#e8f1ff', '#1d4ed8'], ['#f1ecff', '#6d28d9'], ['#e6f9f0', '#047857'],
+    ['#fff4e0', '#b45309'], ['#ffeaf1', '#be185d'], ['#e4f8fb', '#0e7490'],
+];
+$catColor = function ($name) use ($catPalette) {
+    return $catPalette[crc32($name) % count($catPalette)];
+};
 
 // Get stores for dropdowns - Super admin: all stores; Sub admin: only stores they created; Cashier/Staff: their own
 if ($isSuperAdmin) {
@@ -263,8 +536,136 @@ if ($isSuperAdmin) {
     $stmt->execute([$ownerId]);
 }
 $stores = $stmt->fetchAll();
+
+// Variables (Size / Colour / Unit + anything the shop adds) for the Add/Edit form.
+$productVariables = getProductVariables($db);
+$unitOptions = getUnitVariableValues($db);
+
+// Suppliers are optional on a product - a shop can sell without naming who supplied it.
+if ($isSuperAdmin) {
+    $stmt = $db->query("SELECT id, name FROM suppliers WHERE status = 'active' ORDER BY name");
+} else {
+    $stmt = $db->prepare("SELECT id, name FROM suppliers WHERE status = 'active' AND owner_id = ? ORDER BY name");
+    $stmt->execute([$ownerId]);
+}
+$suppliers = $stmt->fetchAll();
+
+// Existing choices, in one query for the whole list (editProduct() reads them from JSON).
+$varMapByProduct = [];
+if ($products && $productVariables) {
+    $ids = implode(',', array_map('intval', array_column($products, 'id')));
+    $in = $productVariables ? implode(',', array_map('intval', array_column($productVariables, 'id'))) : '0';
+    $rows = $db->query("SELECT product_id, variable_id, value_id FROM product_variable_map
+                        WHERE product_id IN ($ids) AND variable_id IN ($in)")->fetchAll();
+    foreach ($rows as $r) {
+        $varMapByProduct[(int) $r['product_id']][(int) $r['variable_id']] = (int) $r['value_id'];
+    }
+}
+
+// The Print Labels modal opens pre-filled with whatever the Barcode Settings
+// page saved, falling back to the sizes print-labels.php itself assumes.
+$labelSettings = [];
+foreach ($db->query("SELECT setting_key, setting_value FROM settings")->fetchAll() as $s) {
+    $labelSettings[$s['setting_key']] = $s['setting_value'];
+}
+$defaultStickerWidth = $labelSettings['barcode_sticker_width'] ?? 1.7700;
+$defaultStickerHeight = $labelSettings['barcode_sticker_height'] ?? 1.3800;
+$defaultPaperWidth = $labelSettings['barcode_paper_width'] ?? 1.8000;
+$defaultPaperHeight = $labelSettings['barcode_paper_height'] ?? 1.4000;
+
 include 'includes/header.php';
 ?>
+
+<style>
+    /* ── Page hero ────────────────────────────────────────────────────────── */
+    .pg-hero {
+        display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+        background: linear-gradient(115deg, #dbeafe 0%, #eef4ff 45%, #f7fbff 100%);
+        border: 1px solid #e0eaff; border-radius: 18px;
+        padding: 1.1rem 1.4rem; margin-bottom: 1.25rem;
+    }
+    .pg-hero-ico {
+        width: 46px; height: 46px; border-radius: 13px; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        background: linear-gradient(135deg, #3b82f6, #1d4ed8); color: #fff; font-size: 1.15rem;
+    }
+    .pg-hero-txt { flex: 1 1 220px; min-width: 0; }
+    .pg-hero-txt h2 { margin: 0; font-size: 1.3rem; font-weight: 800; color: #0f172a; }
+    .pg-hero-txt p { margin: .15rem 0 0; font-size: .82rem; color: #475569; }
+    .pg-hero-actions { display: flex; gap: .6rem; flex-wrap: wrap; }
+    html[data-theme="dark"] .pg-hero { background: linear-gradient(115deg, #16233f 0%, #111a2e 100%); border-color: #1e2a44; }
+    html[data-theme="dark"] .pg-hero-txt h2 { color: var(--gray-900); }
+    html[data-theme="dark"] .pg-hero-txt p { color: var(--gray-500); }
+
+    /* ── Filter card ──────────────────────────────────────────────────────── */
+    .flt-card {
+        background: var(--surface); border: 1px solid var(--gray-200);
+        border-radius: 16px; padding: 1.15rem 1.3rem; margin-bottom: 1.25rem;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, .05);
+    }
+    .flt-grid { display: grid; grid-template-columns: minmax(220px, 2fr) 1fr 1fr 1fr auto; gap: .9rem; align-items: end; }
+    .flt-actions { display: flex; gap: .6rem; }
+    .search-wrap { position: relative; display: block; }
+    .search-wrap > i { position: absolute; left: .85rem; top: 50%; transform: translateY(-50%); font-size: .78rem; color: var(--gray-400); pointer-events: none; }
+    .search-wrap input { padding-left: 2.2rem; }
+    @media (max-width: 1100px) { .flt-grid { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 560px) { .flt-grid { grid-template-columns: 1fr; } .flt-actions .btn { flex: 1; } }
+
+    /* ── Table ────────────────────────────────────────────────────────────── */
+    .sortable a { display: inline-flex; align-items: center; gap: .35rem; color: inherit; text-decoration: none; }
+    .sortable a:hover { color: #2563eb; text-decoration: none; }
+    .sortable .caret { font-size: .68rem; opacity: .4; }
+    .sortable.active .caret { opacity: 1; color: #2563eb; }
+    .p-cell { display: flex; align-items: center; gap: .7rem; min-width: 0; }
+    .p-thumb, .p-ph { width: 40px; height: 40px; border-radius: 9px; flex-shrink: 0; }
+    .p-thumb { object-fit: cover; border: 1px solid var(--gray-200); }
+    .p-ph { display: flex; align-items: center; justify-content: center; background: var(--gray-100); color: var(--gray-400); }
+    .p-name { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+    .p-name small { font-size: .72rem; }
+    .p-barcode { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; color: var(--gray-600); }
+    .pill {
+        display: inline-flex; align-items: center; gap: .3rem;
+        font-size: .72rem; font-weight: 700; padding: .25rem .6rem;
+        border-radius: 999px; white-space: nowrap;
+    }
+    .pill.stock-ok { background: #e6f9f0; color: #047857; }
+    .pill.stock-low { background: #fff4e0; color: #b45309; }
+    .pill.stock-out { background: #fdeaea; color: #b91c1c; }
+    .pill.pill-on { background: #e6f9f0; color: #047857; }
+    .pill.pill-off { background: #fff4e0; color: #b45309; }
+    .pill.pill-store { background: #e8f1ff; color: #1d4ed8; }
+    .pill.pill-store i { font-size: .62rem; }
+    .pill.pill-store .qty { color: #64748b; font-weight: 600; }
+    .store-list { display: flex; flex-wrap: wrap; gap: 4px; max-width: 220px; }
+    .act {
+        width: 32px; height: 32px; border: none; border-radius: 9px; cursor: pointer;
+        display: inline-flex; align-items: center; justify-content: center; font-size: .78rem;
+        transition: transform .15s ease, filter .15s ease;
+    }
+    .act:hover { transform: translateY(-1px); filter: brightness(1.05); }
+    .act.ghost { background: var(--gray-50); border: 1px solid var(--gray-200); color: var(--gray-600); }
+    .act.main { background: #2563eb; color: #fff; }
+    .act.danger { background: #ef4444; color: #fff; }
+
+    /* ── Footer + pager ───────────────────────────────────────────────────── */
+    .tbl-foot {
+        display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+        flex-wrap: wrap; padding: .85rem 1.25rem;
+        border-top: 1px solid var(--gray-100);
+        font-size: .8rem; color: var(--gray-500);
+    }
+    .pager { display: flex; align-items: center; gap: .35rem; }
+    .pg {
+        min-width: 30px; height: 30px; padding: 0 .45rem; border-radius: 8px;
+        border: 1px solid var(--gray-200); background: var(--surface); color: var(--gray-600);
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: .76rem; font-weight: 700; text-decoration: none;
+    }
+    .pg:hover { border-color: #bfdbfe; color: #2563eb; text-decoration: none; }
+    .pg.cur { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .pg.off { opacity: .4; pointer-events: none; }
+    .pg-dots { color: var(--gray-400); font-size: .8rem; padding: 0 .1rem; }
+</style>
 
 <!-- Flash Message -->
 <?php if ($flash = getFlash()): ?>
@@ -277,11 +678,15 @@ include 'includes/header.php';
 <?php endif; ?>
 
 <!-- Page Header -->
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-    <p class="text-muted">Manage your products and inventory</p>
-    <div style="display: flex; gap: 0.5rem;">
+<div class="pg-hero">
+    <span class="pg-hero-ico"><i class="fas fa-box-open"></i></span>
+    <div class="pg-hero-txt">
+        <h2>Products &amp; Inventory</h2>
+        <p>Manage your products and inventory</p>
+    </div>
+    <div class="pg-hero-actions">
         <button class="btn btn-outline" onclick="openLabelModal()">
-            <i class="fas fa-barcode"></i> Print Labels
+            <i class="fas fa-print"></i> Print Labels
         </button>
         <button class="btn btn-primary" onclick="openModal('add')">
             <i class="fas fa-plus"></i> Add Product
@@ -290,56 +695,61 @@ include 'includes/header.php';
 </div>
 
 <!-- Filters -->
-<div class="card" style="margin-bottom: 1.5rem;">
-    <div class="card-body">
-        <form method="GET" style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
-            <div class="form-group" style="flex: 1; min-width: 200px; margin-bottom: 0;">
-                <label class="form-label">Search</label>
+<div class="flt-card">
+    <form method="GET" class="flt-grid">
+        <input type="hidden" name="sort" value="<?php echo $sort; ?>">
+        <input type="hidden" name="dir" value="<?php echo $dir; ?>">
+        <div class="form-group flt-search" style="margin-bottom: 0;">
+            <label class="form-label">Search</label>
+            <span class="search-wrap">
+                <i class="fas fa-search"></i>
                 <input type="text" name="search" class="form-control"
                     placeholder="Enter Product name / SKU / Scan bar code" value="<?php echo $search; ?>">
-            </div>
-            <div class="form-group" style="min-width: 150px; margin-bottom: 0;">
-                <label class="form-label">Category</label>
-                <select name="category" class="form-control">
-                    <option value="">All Categories</option>
-                    <?php foreach ($categories as $cat): ?>
-                        <option value="<?php echo $cat['id']; ?>" <?php echo $category == $cat['id'] ? 'selected' : ''; ?>>
-                            <?php echo sanitize($cat['name']); ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <div class="form-group" style="min-width: 120px; margin-bottom: 0;">
-                <label class="form-label">Status</label>
-                <select name="status" class="form-control">
-                    <option value="">All Status</option>
-                    <option value="active" <?php echo $status_filter === 'active' ? 'selected' : ''; ?>>Active</option>
-                    <option value="inactive" <?php echo $status_filter === 'inactive' ? 'selected' : ''; ?>>Inactive</option>
-                </select>
-            </div>
+            </span>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Category</label>
+            <select name="category" class="form-control">
+                <option value="">All Categories</option>
+                <?php foreach ($categories as $cat): ?>
+                    <option value="<?php echo $cat['id']; ?>" <?php echo $category == $cat['id'] ? 'selected' : ''; ?>>
+                        <?php echo sanitize($cat['name']); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Status</label>
+            <select name="status" class="form-control">
+                <option value="">All Status</option>
+                <option value="active" <?php echo $status_filter === 'active' ? 'selected' : ''; ?>>Active</option>
+                <option value="inactive" <?php echo $status_filter === 'inactive' ? 'selected' : ''; ?>>Inactive</option>
+            </select>
+        </div>
 
-            <?php if ($canAssignStore && !$userStoreId): ?>
-            <div class="form-group" style="min-width: 150px; margin-bottom: 0;">
-                <label class="form-label">Store View</label>
-                <select name="view_store" class="form-control">
-                    <option value="0" <?php echo $view_store_id == 0 ? 'selected' : ''; ?>>All Stores (Global)</option>
-                    <?php foreach ($stores as $s): ?>
-                        <option value="<?php echo $s['id']; ?>" <?php echo $view_store_id == $s['id'] ? 'selected' : ''; ?>>
-                            <?php echo sanitize($s['name']); ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <?php endif; ?>
+        <?php if ($canAssignStore && !$userStoreId): ?>
+        <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Store View</label>
+            <select name="view_store" class="form-control">
+                <option value="0" <?php echo $view_store_id == 0 ? 'selected' : ''; ?>>All Stores (Global)</option>
+                <?php foreach ($stores as $s): ?>
+                    <option value="<?php echo $s['id']; ?>" <?php echo $view_store_id == $s['id'] ? 'selected' : ''; ?>>
+                        <?php echo sanitize($s['name']); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <?php endif; ?>
 
+        <div class="flt-actions">
             <button type="submit" class="btn btn-primary">
                 <i class="fas fa-search"></i> Search
             </button>
             <a href="products.php" class="btn btn-secondary">
                 <i class="fas fa-times"></i> Clear
             </a>
-        </form>
-    </div>
+        </div>
+    </form>
 </div>
 
 <!-- Products Table -->
@@ -349,18 +759,21 @@ include 'includes/header.php';
             <table class="table">
                 <thead>
                     <tr>
-                        <th>Product</th>
-                        <th>Barcode</th>
-                        <th>Category</th>
-                        <th>Buy Price</th>
-                        <th>Sell Price</th>
-                        <th>Stock</th>
+                        <?php
+                        $thSort('name', 'Product');
+                        $thSort('barcode', 'Barcode');
+                        $thSort('category', 'Category');
+                        $thSort('buy_price', 'Buy Price');
+                        $thSort('sell_price', 'Sell Price');
+                        $thSort('stock', 'Stock');
+                        ?>
                         <th>Assigned Stores</th>
                         <th>Comment</th>
-                        <th>Status</th>
+                        <?php $thSort('status', 'Status'); ?>
                         <th>Actions</th>
                     </tr>
-                </thead>                <tbody>
+                </thead>
+                <tbody>
                     <?php if (empty($products)): ?>
                         <tr>
                             <td colspan="10" class="text-center text-muted">No products found</td>
@@ -382,20 +795,33 @@ include 'includes/header.php';
                             ?>
                             <tr>
                                 <td>
-                                    <strong>
-                                        <?php echo sanitize($product['name']); ?>
-                                    </strong>
-                                    <?php if ($product['unit'] !== 'piece'): ?>
-                                        <br><small class="text-muted">(
-                                            <?php echo $product['unit']; ?>)
-                                        </small>
-                                    <?php endif; ?>
+                                    <div class="p-cell">
+                                        <?php if (!empty($product['image'])): ?>
+                                            <img class="p-thumb" src="<?php echo assetUrl($product['image']); ?>" alt="">
+                                        <?php else: ?>
+                                            <span class="p-ph"><i class="fas fa-box"></i></span>
+                                        <?php endif; ?>
+                                        <span class="p-name">
+                                            <strong><?php echo sanitize($product['name']); ?></strong>
+                                            <?php if ($product['unit'] !== 'piece'): ?>
+                                                <small class="text-muted">(
+                                                    <?php echo $product['unit']; ?>)
+                                                </small>
+                                            <?php endif; ?>
+                                        </span>
+                                    </div>
+                                </td>
+                                <td class="p-barcode">
+                                    <?php echo $product['barcode'] ?: '-'; ?>
                                 </td>
                                 <td>
-                                    <?php echo $product['barcode'] ?? '-'; ?>
-                                </td>
-                                <td>
-                                    <?php echo sanitize($product['category_name'] ?? 'Uncategorized'); ?>
+                                    <?php
+                                    $catName = $product['category_name'] ?? '';
+                                    $cc = $catColor($catName ?: 'Uncategorized');
+                                    ?>
+                                    <span class="pill" style="background:<?php echo $cc[0]; ?>; color:<?php echo $cc[1]; ?>;">
+                                        <?php echo sanitize($catName ?: 'Uncategorized'); ?>
+                                    </span>
                                 </td>
                                 <td>
                                     <?php echo formatCurrency($product['buy_price']); ?>
@@ -404,26 +830,25 @@ include 'includes/header.php';
                                         <?php echo formatCurrency($product['sell_price']); ?>
                                     </strong></td>
                                 <td>
-                                    <?php if ($product['current_stock'] <= $product['min_stock']): ?>
-                                        <span class="badge badge-danger">
-                                            <?php echo $product['current_stock']; ?>
-                                        </span>
-                                    <?php else: ?>
-                                        <span class="badge badge-success">
-                                            <?php echo $product['current_stock']; ?>
-                                        </span>
-                                    <?php endif; ?>
+                                    <?php
+                                    $qty = (float)$product['current_stock'];
+                                    $min = (float)$product['min_stock'];
+                                    $stockState = $qty <= 0 ? 'out' : ($qty <= $min ? 'low' : 'ok');
+                                    ?>
+                                    <span class="pill stock-<?php echo $stockState; ?>">
+                                        <?php echo number_format($qty); ?>
+                                    </span>
                                 </td>
                                 <td>
                                     <?php if (empty($storePills)): ?>
                                         <span class="text-muted">-</span>
                                     <?php else: ?>
-                                        <div style="display:flex; flex-wrap:wrap; gap:4px; max-width:220px;">
+                                        <div class="store-list">
                                             <?php foreach ($storePills as $sp): ?>
-                                                <span style="background:#eff6ff; color:#2563eb; border:1px solid #dbeafe; border-radius:999px; padding:2px 8px; font-size:0.72rem; font-weight:600; white-space:nowrap;">
-                                                    <i class="fas fa-store" style="font-size:0.65rem;"></i>
+                                                <span class="pill pill-store">
+                                                    <i class="fas fa-store"></i>
                                                     <?php echo sanitize($sp['name']); ?>
-                                                    <span style="color:#94a3b8;">× <?php echo $sp['qty']; ?></span>
+                                                    <span class="qty">&times; <?php echo $sp['qty']; ?></span>
                                                 </span>
                                             <?php endforeach; ?>
                                         </div>
@@ -437,22 +862,24 @@ include 'includes/header.php';
                                     <?php endif; ?>
                                 </td>
                                 <td>
-                                    <span
-                                        class="badge badge-<?php echo $product['status'] === 'active' ? 'success' : 'warning'; ?>">
+                                    <span class="pill <?php echo $product['status'] === 'active' ? 'pill-on' : 'pill-off'; ?>">
                                         <?php echo ucfirst($product['status']); ?>
                                     </span>
                                 </td>
                                 <td>
                                     <div class="table-actions">
-                                        <button class="btn btn-sm btn-outline" title="Print Label"
+                                        <button class="act ghost" title="Print Label"
                                             onclick="printSingleLabel(<?php echo $product['id']; ?>)">
                                             <i class="fas fa-barcode"></i>
                                         </button>
-                                        <button class="btn btn-sm btn-outline"
-                                            onclick='editProduct(<?php echo json_encode($product); ?>)'>
-                                            <i class="fas fa-edit"></i>
+                                        <button class="act main" title="Edit"
+                                            onclick='editProduct(<?php echo json_encode(array_merge($product, [
+                                                'image_url' => !empty($product['image']) ? assetUrl($product['image']) : '',
+                                                'variables' => $varMapByProduct[(int) $product['id']] ?? new stdClass(),
+                                            ])); ?>)'>
+                                            <i class="fas fa-pen"></i>
                                         </button>
-                                        <button class="btn btn-sm btn-danger"
+                                        <button class="act danger" title="Delete"
                                             onclick="deleteProduct(<?php echo $product['id']; ?>, '<?php echo sanitize($product['name']); ?>')">
                                             <i class="fas fa-trash"></i>
                                         </button>
@@ -465,6 +892,45 @@ include 'includes/header.php';
             </table>
         </div>
     </div>
+    <div class="tbl-foot">
+        <span>
+            <?php if ($totalFiltered === 0): ?>
+                No products match these filters
+            <?php else: ?>
+                Showing <?php echo $offset + 1; ?> to <?php echo min($page * $perPage, $totalFiltered); ?>
+                of <?php echo $totalFiltered; ?> products
+            <?php endif; ?>
+        </span>
+        <?php if ($totalPages > 1): ?>
+            <div class="pager">
+                <a class="pg <?php echo $page <= 1 ? 'off' : ''; ?>"
+                    href="<?php echo htmlspecialchars(productQuery(['page' => max(1, $page - 1)])); ?>">
+                    <i class="fas fa-chevron-left"></i>
+                </a>
+                <?php
+                // A window of pages around the current one, never more than 7 links.
+                $from = max(1, min($page - 3, $totalPages - 6));
+                $to = min($totalPages, max($page + 3, 7));
+                ?>
+                <?php if ($from > 1): ?>
+                    <a class="pg" href="<?php echo htmlspecialchars(productQuery(['page' => 1])); ?>">1</a>
+                    <?php if ($from > 2): ?><span class="pg-dots">&hellip;</span><?php endif; ?>
+                <?php endif; ?>
+                <?php for ($i = $from; $i <= $to; $i++): ?>
+                    <a class="pg <?php echo $i === $page ? 'cur' : ''; ?>"
+                        href="<?php echo htmlspecialchars(productQuery(['page' => $i])); ?>"><?php echo $i; ?></a>
+                <?php endfor; ?>
+                <?php if ($to < $totalPages): ?>
+                    <?php if ($to < $totalPages - 1): ?><span class="pg-dots">&hellip;</span><?php endif; ?>
+                    <a class="pg" href="<?php echo htmlspecialchars(productQuery(['page' => $totalPages])); ?>"><?php echo $totalPages; ?></a>
+                <?php endif; ?>
+                <a class="pg <?php echo $page >= $totalPages ? 'off' : ''; ?>"
+                    href="<?php echo htmlspecialchars(productQuery(['page' => min($totalPages, $page + 1)])); ?>">
+                    <i class="fas fa-chevron-right"></i>
+                </a>
+            </div>
+        <?php endif; ?>
+    </div>
 </div>
 
 <!-- Add/Edit Modal -->
@@ -474,12 +940,12 @@ include 'includes/header.php';
             <h3 class="modal-title" id="modalTitle">Add Product</h3>
             <button class="modal-close" onclick="closeModal()">&times;</button>
         </div>
-        <form method="POST" id="productForm">
+        <form method="POST" id="productForm" enctype="multipart/form-data">
             <div class="modal-body">
                 <input type="hidden" name="action" id="formAction" value="add">
                 <input type="hidden" name="id" id="productId" value="">
 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="cols-2" style="gap: 1rem;">
                     <div class="form-group" style="grid-column: span 2;">
                         <label class="form-label required">Product Name</label>
                         <input type="text" name="name" id="productName" class="form-control" required>
@@ -488,7 +954,9 @@ include 'includes/header.php';
                     <div class="form-group">
                         <label class="form-label">Barcode</label>
                         <input type="text" name="barcode" id="productBarcode" class="form-control"
-                            placeholder="Scan or enter barcode">
+                            placeholder="Scan or type a barcode (blank = auto-generate)">
+                        <small class="form-text">Leave blank and a barcode is generated for you; a scanned or typed
+                            code is kept exactly as entered.</small>
                     </div>
 
                     <div class="form-group">
@@ -551,13 +1019,47 @@ include 'includes/header.php';
                     <div class="form-group">
                         <label class="form-label">Unit</label>
                         <select name="unit" id="productUnit" class="form-control">
-                            <option value="piece">Piece</option>
-                            <option value="kg">Kilogram (kg)</option>
-                            <option value="gram">Gram</option>
-                            <option value="liter">Liter</option>
-                            <option value="pack">Pack</option>
-                            <option value="box">Box</option>
-                            <option value="dozen">Dozen</option>
+                            <option value="">Not set</option>
+                            <?php if ($unitOptions): ?>
+                                <?php foreach ($unitOptions as $uo): ?>
+                                    <option value="<?php echo sanitize($uo['value']); ?>">
+                                        <?php echo sanitize($uo['value']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <?php foreach (['piece', 'kg', 'gram', 'liter', 'pack', 'box', 'dozen'] as $u): ?>
+                                    <option value="<?php echo $u; ?>"><?php echo $u; ?></option>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </select>
+                        <small class="form-text">Edit the list on the Variables page</small>
+                    </div>
+
+                    <?php foreach ($productVariables as $pv): ?>
+                        <?php if ($pv['slug'] === 'unit') { continue; } ?>
+                        <div class="form-group">
+                            <label class="form-label"><?php echo sanitize($pv['name']); ?></label>
+                            <select name="variable[<?php echo (int) $pv['id']; ?>]"
+                                id="productVar<?php echo (int) $pv['id']; ?>" class="form-control">
+                                <option value="">Not set</option>
+                                <?php foreach ($pv['values'] as $vv): ?>
+                                    <option value="<?php echo (int) $vv['id']; ?>">
+                                        <?php echo sanitize($vv['value']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                    <?php endforeach; ?>
+
+                    <div class="form-group">
+                        <label class="form-label">Supplier</label>
+                        <select name="supplier_id" id="productSupplier" class="form-control">
+                            <option value="">None (optional)</option>
+                            <?php foreach ($suppliers as $sup): ?>
+                                <option value="<?php echo (int) $sup['id']; ?>">
+                                    <?php echo sanitize($sup['name']); ?>
+                                </option>
+                            <?php endforeach; ?>
                         </select>
                     </div>
 
@@ -573,6 +1075,20 @@ include 'includes/header.php';
                         <label class="form-label">Comment</label>
                         <textarea name="comment" id="productComment" class="form-control" rows="2"
                             placeholder="Optional comment for this product"></textarea>
+                    </div>
+
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label class="form-label">Product Image</label>
+                        <input type="file" name="image" id="productImage" class="form-control"
+                            accept="image/jpeg,image/png,image/webp,image/gif">
+                        <small class="form-text">JPG, PNG, WEBP or GIF &middot; max 2 MB</small>
+                        <div id="imagePreviewWrap" style="display:none; margin-top:.6rem; align-items:center; gap:.75rem;">
+                            <img id="imagePreview" alt="Product image"
+                                style="width:64px; height:64px; object-fit:cover; border-radius:8px; border:1px solid var(--gray-200, #e2e8f0);">
+                            <label id="removeImageWrap" style="display:none; font-size:.82rem; align-items:center; gap:.35rem; cursor:pointer;">
+                                <input type="checkbox" name="remove_image" id="removeImage" value="1"> Remove current image
+                            </label>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -625,7 +1141,7 @@ include 'includes/header.php';
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+            <div class="cols-2" style="gap: 1rem; margin-top: 1rem;">
                 <div class="form-group" style="margin-bottom: 0;">
                     <label class="form-label">Sticker Width (in)</label>
                     <input type="number" id="stickerWidth" class="form-control"
@@ -638,7 +1154,7 @@ include 'includes/header.php';
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+            <div class="cols-2" style="gap: 1rem; margin-top: 1rem;">
                 <div class="form-group" style="margin-bottom: 0;">
                     <label class="form-label">Paper Width (in)</label>
                     <input type="number" id="paperWidth" class="form-control" value="<?php echo $defaultPaperWidth; ?>"
@@ -651,7 +1167,7 @@ include 'includes/header.php';
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+            <div class="cols-2" style="gap: 1rem; margin-top: 1rem;">
                 <div class="form-group" style="margin-bottom: 0;">
                     <label class="form-label">Labels per Product</label>
                     <input type="number" id="labelQuantity" class="form-control" value="1" min="1" max="100">
@@ -680,6 +1196,7 @@ include 'includes/header.php';
 
         if (action === 'add') {
             document.getElementById('productForm').reset();
+            resetImageField();
             document.getElementById('productId').value = '';
             if (document.getElementById('storeSelectorGroup')) {
                 document.getElementById('storeSelectorGroup').style.display = 'block';
@@ -754,10 +1271,66 @@ include 'includes/header.php';
         document.getElementById('productSellPrice').value = product.sell_price;
         document.getElementById('productStock').value = product.current_stock;
         document.getElementById('productMinStock').value = product.min_stock;
-        document.getElementById('productUnit').value = product.unit;
+        const unitSel = document.getElementById('productUnit');
+        unitSel.querySelectorAll('option[data-legacy]').forEach(function (o) { o.remove(); });
+        const wantUnit = product.unit || '';
+        // A unit saved before the Variables list existed (or renamed since) is not
+        // in the dropdown. Offering it anyway keeps an edit from silently rewriting
+        // it to the first option.
+        if (wantUnit && !Array.from(unitSel.options).some(function (o) { return o.value === wantUnit; })) {
+            const opt = document.createElement('option');
+            opt.value = wantUnit;
+            opt.textContent = wantUnit;
+            opt.dataset.legacy = '1';
+            unitSel.appendChild(opt);
+        }
+        unitSel.value = wantUnit;
+        document.getElementById('productSupplier').value = product.supplier_id || '';
+        document.querySelectorAll('#productForm select[id^="productVar"]').forEach(function (sel) {
+            const varId = sel.id.replace('productVar', '');
+            sel.value = product.variables && product.variables[varId] ? String(product.variables[varId]) : '';
+        });
         document.getElementById('productStatus').value = product.status;
         document.getElementById('productComment').value = product.comment || '';
+
+        // Show the stored image (with a remove option) so the cashier sees what is
+        // already there; the file input itself stays empty until a new file is chosen.
+        const wrap = document.getElementById('imagePreviewWrap');
+        const prev = document.getElementById('imagePreview');
+        const rmWrap = document.getElementById('removeImageWrap');
+        document.getElementById('removeImage').checked = false;
+        if (product.image_url) {
+            prev.src = product.image_url;
+            prev.style.display = 'block';
+            rmWrap.style.display = 'flex';
+            wrap.style.display = 'flex';
+        } else {
+            wrap.style.display = 'none';
+        }
     }
+
+    function resetImageField() {
+        const img = document.getElementById('productImage');
+        if (img) img.value = '';
+        const rm = document.getElementById('removeImage');
+        if (rm) rm.checked = false;
+        const wrap = document.getElementById('imagePreviewWrap');
+        if (wrap) wrap.style.display = 'none';
+        const rmWrap = document.getElementById('removeImageWrap');
+        if (rmWrap) rmWrap.style.display = 'none';
+    }
+
+    // Live-preview a newly chosen file before saving.
+    document.getElementById('productImage').addEventListener('change', function () {
+        const file = this.files && this.files[0];
+        if (!file) return;
+        const prev = document.getElementById('imagePreview');
+        prev.src = URL.createObjectURL(file);
+        prev.style.display = 'block';
+        document.getElementById('removeImageWrap').style.display = 'none';
+        document.getElementById('removeImage').checked = false;
+        document.getElementById('imagePreviewWrap').style.display = 'flex';
+    });
 
     function deleteProduct(id, name) {
         if (confirm('Are you sure you want to delete "' + name + '"?')) {

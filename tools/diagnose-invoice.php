@@ -9,8 +9,7 @@
  * exception class and message in full, so the answer comes from the server rather
  * than from a guess about which file is stale.
  *
- * Read-only. It builds the receipt markup and the WhatsApp job shape but writes
- * nothing and sends nothing.
+ * Read-only. It builds the receipt markup but writes nothing and sends nothing.
  *
  *   php tools/diagnose-invoice.php            the newest sale
  *   php tools/diagnose-invoice.php 1042       a specific invoice
@@ -45,8 +44,7 @@ register_shutdown_function(function () {
 
 require_once $root . '/config/db.php';
 require_once $root . '/config/marketing.php';
-require_once $root . '/config/wa_agent.php';
-// sms_gateway.php for marketingSendSms(). wa_agent.php does not pull it in, so
+// sms_gateway.php for marketingSendSms(). config/db.php does not pull it in, so
 // without this line the function check below reports it missing and the SMS
 // section cannot run - which is a false finding about the server.
 require_once $root . '/config/sms_gateway.php';
@@ -86,7 +84,7 @@ line('');
 // â”€â”€ 1. the files the endpoint requires â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 line('-- files --');
 foreach ([
-    'config/db.php', 'config/marketing.php', 'config/wa_agent.php',
+    'config/db.php', 'config/marketing.php',
     'config/invoice_token.php', 'config/invoice_image.php',
     'admin/api/invoice-send.php', 'admin/api/invoice-sms.php',
 ] as $f) {
@@ -107,8 +105,8 @@ line('');
 line('-- functions --');
 foreach ([
     'invoiceBuildHtml', 'invoiceEnsureToken', 'invoicePublicUrl', 'invoiceSmsText',
-    'marketingNormalizePhone', 'waAgentEnqueue', 'waAgentModeEnabled',
-    'marketingAgentStatus', 'getMarketingSettings', 'marketingSendSms',
+    'marketingNormalizePhone', 'getMarketingSettings',
+    'marketingSendSms',
 ] as $fn) {
     if (function_exists($fn)) { ok($fn . '()'); } else { bad("MISSING  $fn()"); }
 }
@@ -137,12 +135,9 @@ $cols = [
                      'total', 'paid_amount', 'change_amount', 'payment_method',
                      'payment_status', 'owner_id', 'created_at', 'invoice_token'],
     'sale_items' => ['id', 'sale_id', 'product_name', 'quantity', 'unit_price', 'total_price'],
-    'customers'  => ['id', 'name', 'phone', 'owner_id', 'has_whatsapp'],
+    'customers'  => ['id', 'name', 'phone', 'owner_id'],
     'users'      => ['id', 'name', 'owner_id'],
     'settings'   => ['setting_key', 'setting_value', 'owner_id'],
-    'wa_jobs'    => ['id', 'owner_id', 'kind', 'to', 'payload', 'payload_html',
-                     'status', 'result', 'request_key', 'claim_token'],
-    'wa_agents'  => ['owner_id', 'status', 'qr', 'events', 'last_seen', 'command'],
 ];
 foreach ($cols as $table => $want) {
     $have = [];
@@ -193,24 +188,8 @@ if (!$built['ok']) {
 $b = $built['value'];
 line('        receipt markup: ' . strlen($b['html']) . ' bytes, invoice ' . ($b['number'] ?? '?'));
 
-// â”€â”€ 6. the queue shape the WhatsApp send depends on â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-line('');
-line('-- whatsapp send --');
-step('waAgentEnqueue() dry shape', function () use ($db) {
-    $st = $db->prepare("SELECT COUNT(*) FROM wa_jobs");
-    $st->execute();
-    return (int)$st->fetchColumn();
-});
+// ── 6. the token the SMS link depends on ─────────────────────────────────────
 if (($dbRes['ok'] ?? false)) {
-    // The one column added on demand, which is where a database user without
-    // ALTER rights stops.
-    try {
-        $db->query("SELECT payload_html FROM wa_jobs LIMIT 1");
-        ok('wa_jobs.payload_html exists - the queue can carry an invoice');
-    } catch (Throwable $e) {
-        bad('wa_jobs.payload_html is MISSING - run the ALTER below as a user that has it');
-        line('        ALTER TABLE wa_jobs ADD COLUMN payload_html MEDIUMTEXT NULL AFTER payload;');
-    }
     try {
         $db->query("SELECT invoice_token FROM sales LIMIT 1");
         ok('sales.invoice_token exists - an SMS link can be built');
@@ -224,16 +203,28 @@ if (($dbRes['ok'] ?? false)) {
 // â”€â”€ 7. what the SMS would look like â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 line('');
 line('-- sms --');
-$settings = getMarketingSettings((int)$sale['owner_id']);
-$url = invoicePublicUrl(str_repeat('a1b2', 8));
-$msg = invoiceSmsText(
-    $settings['shop_name'] ?? 'Shop',
-    'INV-TEST',
-    1000,
-    $url,
-    '28 Sep 2026',
-    ['label' => 'Follow & watch the live raffle draw', 'url' => $settings['coupon_raffle_url'] ?? '']
-);
+// getMarketingSettings() reads only keys LIKE 'marketing_%', so shop_name,
+// receipt_footer and invoice_sms_* all read as absent here and this section
+// printed a receipt that no real send would have produced. invoiceLoadSale() is
+// what admin/api/invoice-sms.php builds the real text from, so the diagnostic
+// now shows the same thing.
+$load     = invoiceLoadSale($db, (int)$sale['id'], (int)$sale['owner_id']);
+$settings = is_array($load['settings'] ?? null) ? $load['settings'] : [];
+// No 'link' key: the invoice SMS never carries one, and a diagnostic that printed
+// a line no real send produces is the fault this section used to have.
+$msg = invoiceSmsText([
+    'shop_name'      => (string)($settings['shop_name'] ?? ''),
+    'invoice_number' => 'INV-TEST',
+    'date_label'     => date('d M Y, h:i A'),
+    'items'          => is_array($load['items'] ?? null) ? $load['items'] : [],
+    'total'          => 1000,
+    'paid'           => 1000,
+    'paid_label'     => 'cash',
+    'change'         => 0,
+    'footer'         => (string)($settings['receipt_footer'] ?? ''),
+    'promo'          => [],
+    'max_items'      => (int)($settings['invoice_sms_max_items'] ?? 8),
+]);
 line('  segments: ' . $msg['segments'] . '   chars: ' . strlen($msg['text']));
 line('  ---');
 line('  ' . str_replace("\n", "\n  ", $msg['text']));

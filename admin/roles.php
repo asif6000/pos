@@ -6,9 +6,7 @@
 require_once '../config/db.php';
 startSecureSession();
 
-if (!isLoggedIn() || !hasRole('admin')) {
-    redirect('../auth/login.php');
-}
+requirePermission('roles');
 
 define('PAGE_TITLE', 'Roles & Permissions');
 $db = getDB();
@@ -27,6 +25,7 @@ $allPermissions = [
     'categories'       => ['label' => 'Categories',         'icon' => 'fa-tags',            'group' => 'Inventory'],
     'variables'        => ['label' => 'Variable Name',     'icon' => 'fa-sliders-h',       'group' => 'Inventory'],
     'stock'            => ['label' => 'Stock Management',   'icon' => 'fa-warehouse',       'group' => 'Inventory'],
+    'suppliers'        => ['label' => 'Suppliers',          'icon' => 'fa-truck',           'group' => 'Inventory'],
     'transfers'        => ['label' => 'Transfers',          'icon' => 'fa-exchange-alt',    'group' => 'Inventory'],
     'sales'            => ['label' => 'Sales List',         'icon' => 'fa-receipt',         'group' => 'Sales'],
     'sales_delete'     => ['label' => 'Delete Sales',       'icon' => 'fa-trash',           'group' => 'Sales'],
@@ -34,6 +33,7 @@ $allPermissions = [
     'reports'          => ['label' => 'Reports',            'icon' => 'fa-chart-bar',       'group' => 'Sales'],
     'cashbook'         => ['label' => 'Expense',           'icon' => 'fa-book',            'group' => 'Sales'],
     'customers'        => ['label' => 'Customers',          'icon' => 'fa-users',           'group' => 'Management'],
+    'google_contacts'  => ['label' => 'Google Contacts',    'icon' => 'fa-address-book',    'group' => 'Management'],
     'marketing'        => ['label' => 'Marketing',          'icon' => 'fa-bullhorn',        'group' => 'Management'],
     'users'            => ['label' => 'Users',              'icon' => 'fa-user-cog',        'group' => 'Management'],
     'stores'           => ['label' => 'Stores',             'icon' => 'fa-store',           'group' => 'Management'],
@@ -42,6 +42,7 @@ $allPermissions = [
     'settings'         => ['label' => 'Settings',           'icon' => 'fa-cog',             'group' => 'Management'],
     'barcode_settings' => ['label' => 'Barcode Settings',   'icon' => 'fa-barcode',         'group' => 'Management'],
     'vouchers'         => ['label' => 'Vouchers',           'icon' => 'fa-ticket-alt',      'group' => 'Management'],
+    'ecommerce'        => ['label' => 'Online Shop',        'icon' => 'fa-basket-shopping', 'group' => 'Management'],
 ];
 
 // Handle form submissions
@@ -49,7 +50,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $id     = (int)($_POST['id'] ?? 0);
 
-    // â”€â”€ Add / Edit role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Add / Edit role ──────────────────────────────────────────────────────
     if ($action === 'add' || $action === 'edit') {
         $name        = sanitize($_POST['name'] ?? '');
         $slug        = sanitize($_POST['slug'] ?? '');
@@ -78,7 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-    // â”€â”€ Save permissions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Save permissions ─────────────────────────────────────────────────────
     } elseif ($action === 'save_permissions') {
         $roleSlug    = sanitize($_POST['role_slug'] ?? '');
         $permissions = $_POST['permissions'] ?? [];
@@ -86,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($roleSlug)) {
             setFlash('danger', 'Invalid role.');
         } elseif ($roleSlug === 'admin') {
-            setFlash('warning', 'Admin role always has full access â€” permissions cannot be restricted.');
+            setFlash('warning', 'Admin role always has full access — permissions cannot be restricted.');
         } else {
             try {
                 // Create table if it doesn't exist yet (safe migration)
@@ -119,7 +120,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-    // â”€â”€ Delete role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Delete role ──────────────────────────────────────────────────────────
     } elseif ($action === 'delete') {
         $stmt = $db->prepare("SELECT slug FROM roles WHERE id = ?");
         $stmt->execute([$id]);
@@ -155,13 +156,35 @@ try {
         $permsByRole[$row['role_slug']][] = $row['permission'];
     }
 } catch (Exception $e) {
-    // Table might not exist yet â€” handled gracefully
+    // Table might not exist yet — handled gracefully
 }
 
 // Group permissions for display
 $grouped = [];
 foreach ($allPermissions as $key => $meta) {
     $grouped[$meta['group']][$key] = $meta;
+}
+
+// Which of these boxes the shop's own package refuses.
+//
+// hasPermission() asks the package before it asks the role, so a tick here for a
+// feature the package does not include saves cleanly, stays ticked, and then does
+// nothing on every screen the role opens. That mismatch is why "I gave the Staff
+// role Returns and it still will not open" gets reported as permissions being
+// broken. The boxes stay tickable - un-ticking them on save would lose the grant
+// the moment the shop upgrades - but they are labelled, so the tick and the
+// package stop contradicting each other.
+$planSlug     = currentPlanSlug();
+$planName     = null;
+$blockedPerms = [];
+if ($planSlug !== null) {
+    $plansCfg = @include __DIR__ . '/../config/plans.php';
+    if (is_array($plansCfg) && isset($plansCfg[$planSlug]['name'])) {
+        $planName = (string)$plansCfg[$planSlug]['name'];
+    }
+    foreach (array_keys($allPermissions) as $pk) {
+        if (!planAllows($pk)) { $blockedPerms[] = $pk; }
+    }
 }
 
 include 'includes/header.php';
@@ -174,7 +197,7 @@ include 'includes/header.php';
     </div>
 <?php endif; ?>
 
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+<div class="page-toolbar">
     <div>
         <h2 style="margin-bottom: 0.25rem;">Roles & Permissions</h2>
         <p class="text-muted">Create roles and control which pages each role can access</p>
@@ -221,6 +244,19 @@ include 'includes/header.php';
                                 <span class="badge badge-<?php echo $permCount > 0 ? 'primary' : 'warning'; ?>">
                                     <?php echo $permCount; ?>/<?php echo $totalCount; ?> permissions
                                 </span>
+                                <?php
+                                // Say so here too: this is the row the owner reads before
+                                // opening the modal, and a count that quietly includes
+                                // features the package refuses is what makes the tick look
+                                // ignored.
+                                $roleBlocked = array_intersect($perms, $blockedPerms);
+                                ?>
+                                <?php if ($roleBlocked): ?>
+                                <div class="role-blocked-note">
+                                    <i class="fas fa-lock"></i>
+                                    <?php echo count($roleBlocked); ?> waiting on your package
+                                </div>
+                                <?php endif; ?>
                             <?php endif; ?>
                         </td>
                         <td>
@@ -256,7 +292,10 @@ include 'includes/header.php';
         <h3 class="card-title"><i class="fas fa-shield-alt"></i> Permission Matrix</h3>
     </div>
     <div class="card-body" style="padding: 0; overflow-x: auto;">
-        <table class="table" style="min-width: 600px;">
+        <!-- .table-matrix keeps this one table scrolling sideways on a phone
+             instead of stacking: a role-by-permission grid of ticks is the one
+             table on the site whose columns ARE the information. -->
+        <table class="table table-matrix" style="min-width: 600px;">
             <thead>
                 <tr>
                     <th style="min-width: 160px;">Permission</th>
@@ -298,7 +337,7 @@ include 'includes/header.php';
     </div>
 </div>
 
-<!-- â•â•â• Role Add/Edit Modal â•â•â• -->
+<!-- ═══ Role Add/Edit Modal ═══ -->
 <div class="modal-overlay" id="roleModal">
     <div class="modal">
         <div class="modal-header">
@@ -338,7 +377,7 @@ include 'includes/header.php';
     </div>
 </div>
 
-<!-- â•â•â• Permissions Modal â•â•â• -->
+<!-- ═══ Permissions Modal ═══ -->
 <div class="modal-overlay" id="permModal">
     <div class="modal" style="max-width: 620px;">
         <div class="modal-header">
@@ -354,20 +393,34 @@ include 'includes/header.php';
                     Check the pages/features this role can access. Changes take effect immediately for all users.
                 </p>
 
+                <?php if ($blockedPerms): ?>
+                <div class="plan-block-strip">
+                    <i class="fas fa-lock"></i>
+                    <span>Your <strong><?php echo htmlspecialchars($planName ?: $planSlug); ?></strong> package does not include
+                    <?php echo count($blockedPerms); ?> of these features. Keep them ticked for later &mdash; but a role
+                    cannot open them until the shop upgrades
+                    <a href="subscription.php">My Package</a>.</span>
+                </div>
+                <?php endif; ?>
+
                 <?php foreach ($grouped as $groupName => $groupPerms): ?>
                     <div style="margin-bottom: 1.25rem;">
                         <div style="font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #6b7280; margin-bottom: 0.5rem; padding-bottom: 4px; border-bottom: 1px solid #e5e7eb;">
                             <?php echo $groupName; ?>
                         </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
+                        <div class="cols-2" style="gap: 0.4rem;">
                             <?php foreach ($groupPerms as $permKey => $permMeta): ?>
-                                <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.5rem; border-radius: 6px; cursor: pointer; transition: background 0.15s;" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background=''">
+                                <?php $blocked = in_array($permKey, $blockedPerms, true); ?>
+                                <label class="perm-row<?php echo $blocked ? ' is-blocked' : ''; ?>" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.5rem; border-radius: 6px; cursor: pointer; transition: background 0.15s;" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background=''">
                                     <input type="checkbox" name="permissions[]" value="<?php echo $permKey; ?>"
                                         class="perm-checkbox"
                                         data-key="<?php echo $permKey; ?>"
                                         style="width: 15px; height: 15px; cursor: pointer;">
                                     <i class="fas <?php echo $permMeta['icon']; ?>" style="color: #6b7280; width: 14px; font-size: 13px;"></i>
                                     <span style="font-size: 13px;"><?php echo $permMeta['label']; ?></span>
+                                    <?php if ($blocked): ?>
+                                    <em class="plan-block-tag" title="Not included in the <?php echo htmlspecialchars($planName ?: $planSlug); ?> package">not in package</em>
+                                    <?php endif; ?>
                                 </label>
                             <?php endforeach; ?>
                         </div>
@@ -395,7 +448,7 @@ include 'includes/header.php';
 <script>
 const allPermsByRole = <?php echo json_encode($permsByRole); ?>;
 
-// â”€â”€ Role Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Role Modal ────────────────────────────────────────────────────────────────
 function openRoleModal(action, role) {
     document.getElementById('roleFormAction').value = action;
     document.getElementById('roleModalTitle').textContent = action === 'add' ? 'Add Role' : 'Edit Role';
@@ -426,7 +479,7 @@ document.getElementById('roleName').addEventListener('input', function() {
     }
 });
 
-// â”€â”€ Permission Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Permission Modal ──────────────────────────────────────────────────────────
 function openPermModal(roleSlug, roleName) {
     document.getElementById('permRoleSlug').value = roleSlug;
     document.getElementById('permModalTitle').textContent = 'Permissions: ' + roleName;
@@ -444,7 +497,7 @@ function toggleAll(state) {
     document.querySelectorAll('.perm-checkbox').forEach(cb => cb.checked = state);
 }
 
-// â”€â”€ Delete Role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Delete Role ───────────────────────────────────────────────────────────────
 function deleteRole(id, name) {
     if (confirm('Delete role "' + name + '"? This will also remove all its permissions.')) {
         const form = document.createElement('form');

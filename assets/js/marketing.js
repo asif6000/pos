@@ -1,5 +1,5 @@
 /**
- * Marketing - WhatsApp & SMS
+ * Marketing - SMS campaigns
  *
  * The send loop is driven from the browser: it asks the API for a small batch,
  * renders the result, then asks for the next one. Keeps the PHP side stateless
@@ -10,27 +10,25 @@
 
     var API_CAMPAIGN = 'api/marketing-campaign.php';
     var API_AUDIENCE = 'api/marketing-audience.php';
-    var API_STATUS   = 'api/marketing-status.php';
+    var API_BALANCE  = 'api/sms-balance.php';
 
     // ── State ────────────────────────────────────────────────────────────────
     var state = {
-        // SMS only. The WhatsApp option is gone from this page; WhatsApp
-        // sending lives in the inbox. Do not reintroduce the value here
-        // without restoring the channel button and the QR card too, or the
-        // campaign would go out as WhatsApp with no way to pick SMS.
         channel: 'sms',
         smsProvider: 'manual',
         serverIp: '',
         customers: [],
-        totals: { all: 0, usable: 0, wa_yes: 0, wa_no: 0, unchecked: 0 },
+        totals: { all: 0, usable: 0 },
         recipients: { rows: 0, people: 0 },
         selected: {},
+        // Batch selection: ten at a time. batchLog records which ids each press
+        // of Next handed over, so Back can take back exactly one press and can
+        // never disturb a checkbox the shopkeeper ticked by hand.
+        batchSize: 10,
+        batchLog: [],
         campaignId: 0,
         running: false,
         paused: false,
-        syncing: false,
-        stopSync: false,
-        syncAutoDone: false,
         // Live refresh. See pollAudience() for why it is paused in as many
         // situations as it runs.
         liveTimer: null,
@@ -81,8 +79,6 @@
             .catch(function () { return { ok: false, error: 'Server response could not be read.' }; });
     }
 
-    function delay(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
-
     // ── Channel ────────────────────────────────────────────────────────────
     /**
      * There is no longer a choice of channel, so this seeds the provider from
@@ -106,9 +102,9 @@
 
     // ── Message composer ────────────────────────────────────────────────────
 
-    // Sample values so the preview shows a real looking message. Anything the
-    // backend does not replace would reach the customer verbatim, so unknown
-    // tokens are highlighted in the preview instead of going out unnoticed.
+    // Sample values so the preview shows a real looking message. The backend
+    // fills every token it knows and drops the rest, so the preview does the
+    // same: what is in this bubble is what reaches the phone.
     function previewValues() {
         var card = $('mkComposeCard');
         var shop = card ? (card.dataset.shopName || '') : '';
@@ -116,7 +112,7 @@
             '{name}': 'Rahim',
             '{full_name}': 'Rahim Uddin',
             '{phone}': '01712345678',
-            '{shop}': shop || 'apni',
+            '{shop}': shop,
             '{last_visit_days}': '47',
             '{last_visit}': '47 days ago'
         };
@@ -147,6 +143,23 @@
         }
     }
 
+    /**
+     * The same clean-up config/sms_gateway.php applies before an SMS leaves.
+     *
+     * The shop pays per segment and the customer reads the result, so the server
+     * is the gate: a word a stale browser build wrote into the box ("undefined")
+     * and a token nobody can fill are both removed there. The preview runs the
+     * same rules so the bubble is the message rather than a promise about it.
+     */
+    function scrubMessage(text) {
+        return String(text)
+            .replace(/\bundefined\b|\bNaN\b/g, '')
+            .replace(/[ \t]+(?=[,.;:!?])/g, '')
+            .replace(/[ \t]{2,}/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
     function renderPreview() {
         var bubble = $('mkPreviewBubble');
         var raw = $('mkMessage').value;
@@ -158,22 +171,24 @@
         }
 
         var vals = previewValues();
-        var html = esc(raw).replace(/\{([a-z0-9_]+)\}/gi, function (m, name) {
+        var bad = 0;
+        var out = scrubMessage(raw).replace(/\{([a-z0-9_ ]+)\}/gi, function (m, name) {
             var key = '{' + name.toLowerCase() + '}';
-            if (vals[key] === undefined) { return '<mark class="mk-tok-bad">' + m + '</mark>'; }
-            return esc(vals[key]);
+            if (vals[key] === undefined) {
+                // Unfillable, so it is dropped - exactly as the send path drops it.
+                bad++;
+                return '';
+            }
+            return vals[key];
         });
 
         bubble.className = 'mk-bubble';
-        bubble.innerHTML = html;
+        bubble.textContent = scrubMessage(out);
 
-        var bad = bubble.querySelectorAll('.mk-tok-bad').length;
         var warn = $('mkPreviewWarn');
-        if (bad) {
-            warn.textContent = bad + ' ta token chinte parbo na — customer e literally chole jabe.';
-        } else {
-            warn.textContent = '';
-        }
+        warn.textContent = bad
+            ? bad + ' ta token chinte parbo na — segulo message theke remove hoye jabe.'
+            : '';
     }
 
     function paintPresets() {
@@ -222,13 +237,6 @@
             if ($('mkOnlyInactive').checked) { loadAudience(); }
         });
 
-        $('mkShowUnverified').addEventListener('change', loadAudience);
-        $('mkSyncBtn').addEventListener('click', function () { startSync(false); });
-        $('mkSyncStopBtn').addEventListener('click', function () {
-            state.stopSync = true;
-            $('mkSyncText').textContent = 'Stopping after this batch…';
-        });
-
         // The live refresh must never fight a person who is mid-gesture. Paused
         // while they type in the search box, so the results under the cursor do
         // not change without them asking.
@@ -243,13 +251,22 @@
 
         $('mkSelectAllBtn').addEventListener('click', function () {
             state.customers.forEach(function (c) { state.selected[c.id] = true; });
+            // The batch history is about how the list was walked, so it stops
+            // being true the moment something other than Next selects rows.
+            state.batchLog = [];
             renderCustomers();
         });
 
         $('mkSelectNoneBtn').addEventListener('click', function () {
             state.selected = {};
+            state.batchLog = [];
             renderCustomers();
         });
+
+        $('mkBatchNextBtn').addEventListener('click', selectNextBatch);
+        $('mkBatchPrevBtn').addEventListener('click', undoLastBatch);
+
+        $('mkSelectTotalBtn').addEventListener('click', selectEveryCustomer);
 
         syncComposer();
     }
@@ -269,19 +286,17 @@
      *
      * Used to decide whether a live poll found anything worth repainting. It
      * covers the per-row data, not just the counts, because two lists of the
-     * same length with a different badge in the middle still have to repaint -
-     * a count-only check would leave a stale "unchecked" row on screen after
-     * somebody's number got confirmed.
+     * same length with a different name in the middle still have to repaint -
+     * a count-only check would leave a stale row on screen after a customer
+     * was edited.
      */
     function audienceSignature(rows, totals, recipients) {
         var body = (rows || []).map(function (c) {
-            return c.id + ':' + (c.has_whatsapp === true ? '1' : (c.has_whatsapp === false ? '0' : '?'))
-                + ':' + (c.last_visit || '-') + ':' + c.name + ':' + c.phone;
+            return c.id + ':' + (c.last_visit || '-') + ':' + c.name + ':' + c.phone;
         }).join('|');
         var t = totals || {};
         var r = recipients || {};
-        return body + '#' + [t.all, t.usable, t.wa_yes, t.wa_no, t.unchecked,
-            r.rows, r.people].join(',');
+        return body + '#' + [t.all, t.usable, r.rows, r.people].join(',');
     }
 
     /**
@@ -291,17 +306,9 @@
      *                          few seconds on its own reads as broken.
      */
     function loadAudience(silent) {
-        // Inverted on the way in. The list shows confirmed numbers by default,
-        // because a recipient is somebody reachable, and the checkbox asks for
-        // the extra rows - the unconfirmed ones - rather than the other way
-        // round. The server defaults the same way, so a caller that forgets to
-        // pass this gets the safe list.
-        var onlyWa = !($('mkShowUnverified') && $('mkShowUnverified').checked);
-
         var url = API_AUDIENCE + '?q=' + encodeURIComponent($('mkSearch').value.trim()) +
             '&only_inactive=' + ($('mkOnlyInactive').checked ? '1' : '0') +
-            '&days=' + $('mkInactiveDays').value +
-            '&wa=' + (onlyWa ? '1' : '0');
+            '&days=' + $('mkInactiveDays').value;
 
         if (!silent) {
             $('mkCustomerRows').innerHTML =
@@ -339,40 +346,24 @@
             state.recipients = recipients;
             state.liveLastSig = sig;
 
-            renderWaBar();
             renderCustomers();
-            // Here, not at boot: state.totals is what primeWaSync reads to size
-            // the backlog, and it only exists once this block has run.
-            primeWaSync();
         }).catch(function () {
             state.liveLoading = false;
         });
     }
 
     /**
-     * Keep the list current while the page is open.
-     *
-     * This exists because the answer now arrives on its own. The bridge uploads
-     * the WhatsApp address book every few seconds, and every number in it that
-     * matches a saved customer confirms that customer, so the reachable set
-     * grows while the shopkeeper is looking at the page. Before that, the only
-     * way a row could change was for them to press the button themselves.
-     *
-     * It polls, because the POS cannot push to an open browser tab.
+     * Keep the list current while the page is open, because the POS cannot push
+     * to an open browser tab. If the customer list is edited in another tab, the
+     * change shows up here within the polling interval.
      *
      * The interval is a floor on how stale the list may get, not a promise of
-     * how quickly it updates. Whether a change appears here in eight seconds or
-     * in one minute depends on the bridge being connected and on how tightly
-     * WhatsApp itself lets the address book be read, and this file has no way
-     * to make that faster. The badge says "Live" and the refresh is simply what
-     * it is - claiming more precision than the underlying transport can
-     * deliver would be worse than not claiming anything.
+     * how quickly it updates.
      */
     function pollAudience() {
-        // Anything that is mid-flight owns the screen. A refresh during a check
-        // run would race its own batches and make the progress bar jump
-        // backwards, and one during a send is not worth the risk at all.
-        if (state.syncing || state.running || state.livePaused || state.liveLoading) { return; }
+        // Anything that is mid-flight owns the screen. A refresh during a send
+        // is not worth the risk at all.
+        if (state.running || state.livePaused || state.liveLoading) { return; }
         if ($('mkSearch') === document.activeElement) { return; }
 
         loadAudience(true);
@@ -383,306 +374,193 @@
         state.liveTimer = setInterval(pollAudience, 8000);
     }
 
-    // ── WhatsApp number sync ────────────────────────────────────────────────
-    /**
-     * Ask WhatsApp about every customer number we have not checked yet.
-     *
-     * The loop lives in the browser, one small batch per request, for the same
-     * reason the send loop does: a single long request would be killed by the web
-     * server's timeout, and the shopkeeper would have no way to stop. Each batch
-     * writes its answers straight onto the customer rows, so progress survives a
-     * page refresh and a re-run only fills the gaps.
-     */
-    function startSync(recheck) {
-        if (state.syncing) { return; }
-        state.syncing = true;
-        state.stopSync = false;
+// ── Batch selection ─────────────────────────────────────────────────────────
+    //
+    // Ten rows at a time, rather than every row at once. "Select all" is still
+    // there for the shopkeeper who genuinely means the whole list, but walking a
+    // long list ten rows at a time is how the shopkeeper actually sees which
+    // numbers a campaign is about to spend credits on.
+    //
+    // The step order is the order the table is drawn in, and it always takes the
+    // first rows that are still unselected, so Next cannot hand back the same rows
+    // twice and cannot skip past a gap the filters left.
 
-        $('mkSyncBtn').classList.add('d-none');
-        $('mkSyncStopBtn').classList.remove('d-none');
-        $('mkSyncProgress').classList.remove('d-none');
-        $('mkSyncLabel').textContent = 'Checking…';
-
-        var cursor = 0;
-        var totalYes = 0;
-        var totalNo = 0;
-        var totalUnknown = 0;
-        var totalChecked = 0;
-        var startTotal = (state.totals && state.totals.unchecked) || 0;
-        // Whether the shopkeeper was looking at the whole list rather than the
-        // confirmed subset, so the summary at the end only interrupts when the
-        // newly confirmed numbers are the ones they were actually looking at.
-        var wasFiltered = !($('mkShowUnverified') && $('mkShowUnverified').checked);
-
-        function finish() {
-            state.syncing = false;
-            $('mkSyncBtn').classList.remove('d-none');
-            $('mkSyncStopBtn').classList.add('d-none');
-            $('mkSyncProgress').classList.add('d-none');
-            $('mkSyncLabel').textContent = recheck ? 'Check again' : 'Check numbers';
-
-            // Refresh the table either way: a stop still leaves the batches that
-            // did finish visible, and rechecking changes every row's badge.
-            loadAudience();
-
-            if (!wasFiltered) { return; }
-            toast(totalChecked + ' number check hoyeche — ' + totalYes + ' ta e WhatsApp ache.', 'success');
-        }
-
-        function step() {
-            if (state.stopSync) { finish(); return; }
-
-            $('mkSyncText').textContent = 'Checking… ' + totalChecked + ' done, ' +
-                totalYes + ' ta WhatsApp e ache';
-
-            // Progress bar fills as the original backlog is worked off, and sits
-            // at 100% for a recheck where there is no backlog to count down.
-            var pct = startTotal > 0
-                ? Math.min(100, Math.round((totalChecked / startTotal) * 100))
-                : 100;
-            $('mkSyncFill').style.width = pct + '%';
-
-            post('sync_whatsapp', { limit: 10, cursor: cursor, recheck: recheck ? 1 : 0 })
-                .then(function (res) {
-                    if (!res || !res.ok) {
-                        state.syncing = false;
-                        $('mkSyncProgress').classList.add('d-none');
-                        $('mkSyncBtn').classList.remove('d-none');
-                        $('mkSyncStopBtn').classList.add('d-none');
-                        $('mkSyncLabel').textContent = 'Check numbers';
-                        toast((res && res.error) || 'WhatsApp check kora jayni.', 'error');
-                        return;
-                    }
-
-                    totalChecked += res.checked || 0;
-                    totalYes += res.yes || 0;
-                    totalNo += res.no || 0;
-                    totalUnknown += res.unknown || 0;
-                    cursor = res.next_cursor || cursor;
-
-                    if (res.done || state.stopSync) {
-                        $('mkSyncFill').style.width = '100%';
-                        if (totalChecked === 0) {
-                            toast('Check korar moto kono baki number nai.', 'info');
-                        }
-                        finish();
-                        return;
-                    }
-                    step();
-                })
-                .catch(function () {
-                    state.syncing = false;
-                    $('mkSyncProgress').classList.add('d-none');
-                    toast('Connection cut hoye geche. abar try korun.', 'error');
-                });
-        }
-
-        step();
+    /** Rows Next could still hand over: on screen, and not already selected. */
+    function batchCandidates() {
+        return state.customers.filter(function (c) { return !state.selected[c.id]; });
     }
 
     /**
-     * The two lines above the table.
+     * Bring the two buttons and the progress line in line with the selection.
      *
-     * The first is the reachable count, which is what a recipient list is for.
-     * The second exists because the shopkeeper keeps comparing it to the number
-     * of customers, and the two are different quantities that only ever match by
-     * accident. A recipient row is written per send, per campaign, so the same
-     * person is counted again every time they are targeted. Saying that here is
-     * the difference between a number that looks like a bug and a number that
-     * is simply a count of something else.
+     * Called from every place the selection changes, not just from Next, so that
+     * ticking the last row by hand also disables Next instead of leaving a button
+     * that does nothing.
      */
-    function renderWaBar() {
-        var t = state.totals || { all: 0, usable: 0, wa_yes: 0, wa_no: 0, unchecked: 0 };
-        var r = state.recipients || { rows: 0, people: 0 };
-        var el = $('mkWaCount');
-        if (!el) { return; }
+    function renderBatch() {
+        var total = state.customers.length;
+        // Counted from the rows actually on screen rather than from state.selected:
+        // the selection deliberately outlives a search or a filter change, so a
+        // number chosen under one filter is still chosen under the next one and
+        // must not be counted as pending.
+        var onScreen = batchCandidates().length;
 
-        if (t.usable === 0) {
-            el.textContent = 'Kono customer er number nai';
-            el.className = 'mk-wa-none';
-        } else if (t.unchecked > 0) {
-            el.innerHTML = '<strong>' + t.wa_yes + '</strong> / ' + t.usable +
-                ' number e WhatsApp ache &middot; <strong>' + t.unchecked + '</strong> ta check baki';
-            el.className = 'mk-wa-partial';
-        } else {
-            el.innerHTML = '<strong>' + t.wa_yes + '</strong> / ' + t.usable +
-                ' number e WhatsApp ache';
-            el.className = t.wa_yes > 0 ? 'mk-wa-done' : 'mk-wa-none';
+        var prev = $('mkBatchPrevBtn');
+        if (prev) { prev.disabled = state.batchLog.length === 0; }
+
+        var next = $('mkBatchNextBtn');
+        if (next) {
+            if (onScreen === 0) {
+                next.disabled = true;
+                next.innerHTML = '<i class="fas fa-check"></i> Shob select hoye geche';
+            } else {
+                next.disabled = false;
+                // The count is on the button because a leftover of three rows means
+                // the list is nearly done, and "Next 10" would oversell it.
+                next.innerHTML = 'Next ' + Math.min(state.batchSize, onScreen) +
+                    '<i class="fas fa-chevron-right"></i>';
+            }
         }
 
-        var note = $('mkWaNote');
-        if (!note) { return; }
+        var note = $('mkBatchNote');
+        if (note) {
+            var picked = Object.keys(state.selected).length;
+            // "Select total" can pick people who are not on screen at all, so the
+            // count of what is selected and the count of what is on screen are two
+            // different numbers and saying only the second one would understate a
+            // campaign by hundreds.
+            var offscreen = picked - (total - onScreen);
 
-        var parts = [];
-        parts.push('<b>' + t.all + '</b> customer &middot; <b>' + t.wa_yes + '</b> ta WhatsApp e ache (eitai recipient)');
-
-        if (t.wa_no > 0) {
-            parts.push('<b>' + t.wa_no + '</b> ta confirm achei WhatsApp nai');
-        }
-        if (t.unchecked > 0) {
-            parts.push('<b>' + t.unchecked + '</b> ta check baki &mdash; bridge address book theke nijer thik confirm hoye jay');
-        }
-
-        if (r.rows > 0) {
-            // The sentence that answers "why is this number bigger than the
-            // customer count", in the shop's language rather than in SQL terms.
-            parts.push('Campaign gulor total <b>' + r.rows + '</b> ta send row, '
-                + 'tar moddhe <b>' + r.people + '</b> jena alada customer &mdash; '
-                + 'ekjon customer ekadhik campaign e gaye row bodlay');
-        }
-
-        note.innerHTML = parts.join(' &middot; ');
-    }
-
-    /** Per-row badge: green tick = on WhatsApp, grey cross = not, nothing = unchecked. */
-    function waBadge(c) {
-        if (c.has_whatsapp === true) {
-            return '<i class="fab fa-whatsapp mk-wa-yes" title="WhatsApp e ache' +
-                (c.whatsapp_checked_at ? ' (checked ' + esc(c.whatsapp_checked_at) + ')' : '') +
-                '"></i>';
-        }
-        if (c.has_whatsapp === false) {
-            return '<i class="fas fa-circle-xmark mk-wa-no" title="Ei number e WhatsApp nai"></i>';
-        }
-        return '<i class="fas fa-circle-question mk-wa-unknown" title="Check hoy nai"></i>';
-    }
-
-    // ── Add numbers to the phone's contacts ──────────────────────────────────
-    //
-    // WhatsApp exposes no API for writing contacts, so this cannot add anything
-    // itself. What it does is make the phone's own scanner do it: a vCard QR per
-    // number, stepped through one at a time, because a QR holds exactly one
-    // contact. For a whole list there is a .vcf download, which the phone's
-    // contact importer handles in one step.
-    //
-    // The numbers come from the audience already on screen rather than a second
-    // list, so "add to WhatsApp" and "send a campaign" cannot disagree about who
-    // the customers are.
-    var contactFlow = { cards: [], at: 0, loading: false };
-
-    function openContactFlow() {
-        var picked = Object.keys(state.selected)
-            .map(function (id) {
-                return state.customers.filter(function (c) { return String(c.id) === String(id); })[0];
-            })
-            .filter(Boolean)
-            .filter(function (c) { return !!c.phone; });
-
-        // Nothing selected should not mean an empty screen. Falling back to the
-        // whole audience is what the shop actually wants from a button that says
-        // "add to WhatsApp".
-        var rows = picked.length ? picked : state.customers.filter(function (c) { return !!c.phone; });
-
-        if (!rows.length) {
-            $('mkContactList').innerHTML = '';
-            $('mkContactEmpty').classList.remove('d-none');
-            showContactModal();
-            return;
+            if (total === 0) {
+                note.textContent = offscreen > 0
+                    ? picked + ' ta customer select ache, kintu ei filter e to ekta-i deoa jacche na. '
+                      + 'Search ba filter reset kore list dekho.'
+                    : '';
+            } else if (onScreen === 0) {
+                note.textContent = 'Ei list e ' + total + ' ta number, shob-ta-i selected. '
+                    + 'Baki number dekh-te search ba filter bodlaiyen.'
+                    + (offscreen > 0 ? ' Ar ' + offscreen + ' ta list er baire select ache.' : '');
+            } else {
+                note.textContent = 'Ei list e ' + total + ' ta number ache. Next dabile '
+                    + Math.min(state.batchSize, onScreen) + ' ta kore select korbe — '
+                    + onScreen + ' ta baki, matro '
+                    + Math.ceil(onScreen / state.batchSize) + ' bar click lagbe.'
+                    + (offscreen > 0 ? ' Ar ' + offscreen + ' ta list er baire select ache.' : '');
+            }
         }
 
-        $('mkContactEmpty').classList.add('d-none');
-        $('mkContactList').innerHTML = '<div class="text-center text-muted" style="padding:18px">'
-            + '<div class="spinner"></div><p>QR banachhi…</p></div>';
-        contactFlow.loading = true;
-        showContactModal();
-
-        var body = new FormData();
-        body.append('action', 'contact_qr');
-        rows.slice(0, 60).forEach(function (c) { body.append('chat_ids[]', c.phone); });
-
-        fetch('api/whatsapp-chat.php', { method: 'POST', body: body, credentials: 'same-origin' })
-            .then(function (r) { return r.json(); })
-            .then(function (r) {
-                contactFlow.loading = false;
-                if (!r || !r.ok) {
-                    $('mkContactList').innerHTML = '<div class="alert alert-warning mb-0">'
-                        + esc((r && r.error) || 'QR banano jay ni.') + '</div>';
-                    return;
-                }
-                contactFlow.cards = r.cards || [];
-                contactFlow.at = 0;
-                renderContactCard();
-            })
-            .catch(function () {
-                contactFlow.loading = false;
-                $('mkContactList').innerHTML =
-                    '<div class="alert alert-warning mb-0">Server response pora jay ni.</div>';
-            });
+        return { total: total, onScreen: onScreen, picked: Object.keys(state.selected).length };
     }
 
-    function showContactModal() {
-        // This project has no Bootstrap. Its modal is an overlay shown by adding
-        // .active, the same call the send-log modal uses.
-        var el = $('mkContactsModal');
-        if (el) { el.classList.add('active'); }
+    /**
+     * Bring the first row of a batch into view, without scrolling if it already is.
+     *
+     * Done here rather than in renderCustomers(), because renderCustomers() also
+     * runs on the live poll - scrolling there would yank the list out from under
+     * somebody halfway down reading a name.
+     */
+    function revealBatch(ids) {
+        if (!ids.length) { return; }
+        var row = document.querySelector('#mkCustomerRows tr[data-id="' + ids[0] + '"]');
+        if (row && row.scrollIntoView) {
+            try {
+                row.scrollIntoView({ block: 'nearest' });
+            } catch (e) {
+                row.scrollIntoView(); // Older browsers reject the options object
+            }
+        }
     }
 
-    function hideContactModal() {
-        var el = $('mkContactsModal');
-        if (el) { el.classList.remove('active'); }
+    function selectNextBatch() {
+        var batch = batchCandidates().slice(0, state.batchSize);
+        // Nothing left on screen: leave the selection alone and let renderBatch()
+        // keep the button disabled, rather than clearing somebody's work.
+        if (!batch.length) { renderCustomers(); return; }
+
+        var ids = batch.map(function (c) { return c.id; });
+        ids.forEach(function (id) { state.selected[id] = true; });
+        state.batchLog.push(ids);
+
+        renderCustomers();
+        revealBatch(ids);
     }
 
-    function renderContactCard() {
-        var cards = contactFlow.cards;
-        if (!cards.length) { return; }
-        if (contactFlow.at >= cards.length) { contactFlow.at = 0; }
-        var c = cards[contactFlow.at];
-
-        $('mkContactList').innerHTML =
-            '<div class="mk-contact-card">'
-            + '<div class="mk-contact-pos">' + (contactFlow.at + 1) + ' / ' + cards.length + '</div>'
-            + (c.qr
-                ? '<img class="mk-contact-qr" src="' + esc(c.qr) + '" alt="QR for ' + esc(c.name) + '">'
-                : '<div class="alert alert-warning">Ei number er QR banano jay ni.</div>')
-            + '<div class="mk-contact-name">' + esc(c.name) + '</div>'
-            + '<div class="mk-contact-phone">' + esc(c.phone) + '</div>'
-            + '<a class="btn btn-sm btn-whatsapp mt-2" href="' + esc(c.wa_link) + '" target="_blank" rel="noopener">'
-            + '<i class="fab fa-whatsapp"></i> WhatsApp e kholo</a>'
-            + '</div>';
-
-        $('mkContactPrevBtn').disabled = cards.length < 2;
-        $('mkContactNextBtn').disabled = cards.length < 2;
+    function undoLastBatch() {
+        var ids = state.batchLog.pop();
+        if (!ids) { renderCustomers(); return; }
+        ids.forEach(function (id) { delete state.selected[id]; });
+        renderCustomers();
+        revealBatch(ids);
     }
 
-    function stepContact(delta) {
-        if (!contactFlow.cards.length) { return; }
-        contactFlow.at = (contactFlow.at + delta + contactFlow.cards.length) % contactFlow.cards.length;
-        renderContactCard();
-    }
+    /**
+     * Select every customer who has a number, whatever the filters are doing.
+     *
+     * "Select all on screen" can only reach the rows the list currently holds, and
+     * that list is filtered by search, by the inactive-days toggle and is capped
+     * at 500 rows. So for a shop with more customers than any of those allow,
+     * there is otherwise no way to say "all of them" - which is the one thing a
+     * shopkeeper means by the Total in the header.
+     *
+     * The ids come from the server rather than from state.customers, so this is not
+     * the same thing as selecting the visible rows: it deliberately crosses the
+     * search box and the inactive filter.
+     */
+    function selectEveryCustomer() {
+        var btn = $('mkSelectTotalBtn');
+        btn.disabled = true;
+        var label = btn.innerHTML;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading';
 
-    function initContactFlow() {
-        $('mkAddContactsBtn').addEventListener('click', openContactFlow);
-        $('mkContactNextBtn').addEventListener('click', function () { stepContact(1); });
-        $('mkContactPrevBtn').addEventListener('click', function () { stepContact(-1); });
+        get(API_AUDIENCE + '?ids_only=1').then(function (res) {
+            btn.disabled = false;
+            btn.innerHTML = label;
 
-        // Wired to this modal explicitly rather than through [data-close-modal]:
-        // the existing generic handler is hardcoded to close the send-log modal,
-        // so relying on it would close the wrong thing.
-        $('mkContactsClose').addEventListener('click', hideContactModal);
-        $('mkContactsModal').addEventListener('click', function (e) {
-            // A click on the backdrop itself, not on the dialog inside it.
-            if (e.target === this) { hideContactModal(); }
-        });
-        document.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape') { hideContactModal(); }
+            if (!res.ok) {
+                toast(res.error || 'Customer list nite parlam na.', 'error');
+                return;
+            }
+
+            var ids = res.ids || [];
+            if (!ids.length) {
+                toast('Ei shop e phone number ache emon kono customer nai.', 'warn');
+                return;
+            }
+
+            // How many of them are not on screen, because that is the whole point of
+            // this button and the shopkeeper should be told they are about to
+            // campaign people they cannot see listed.
+            var visible = {};
+            state.customers.forEach(function (c) { visible[c.id] = true; });
+            var offscreen = ids.filter(function (id) { return !visible[id]; }).length;
+
+            if (!confirm(ids.length + ' ta customer select korbe'
+                + (offscreen > 0 ? '\n\n' + offscreen + ' ta ekhon list e nai (search ba filter e),'
+                    + ' kintu tara-o select hobe.' : '')
+                + '\n\nChalan?')) {
+                return;
+            }
+
+            ids.forEach(function (id) { state.selected[id] = true; });
+            // Not a walk down the list, so there is no batch to go back to.
+            state.batchLog = [];
+            renderCustomers();
+            toast(ids.length + ' ta customer select holo.', 'success');
         });
     }
 
     function renderCustomers() {
         var tbody = $('mkCustomerRows');
-        var count = Object.keys(state.selected).length;
-        $('mkSelectedCount').textContent = count + ' selected';
+        $('mkSelectedCount').textContent = Object.keys(state.selected).length + ' selected';
 
         if (state.customers.length === 0) {
-            var unverified = $('mkShowUnverified') && $('mkShowUnverified').checked;
             tbody.innerHTML =
                 '<tr><td colspan="4" class="text-center text-muted" style="padding:24px">' +
-                (unverified
-                    ? 'Ei filter e kono customer paoa jachhe na.'
-                    : 'Ei filter e kono WhatsApp number pawa jachhe na. Bridge connected thakle nijer '
-                      + 'address book theke confirm hoye jay &mdash; "Also show unconfirmed" chalanor '
-                      + 'por dekhun, ba "Check numbers" press kore baki number check korun.') +
+                'Ei filter e kono customer paoa jachhe na.' +
                 '</td></tr>';
+            // On this path too: a search that comes back empty must not leave
+            // the Next button live with rows behind it that are not on screen.
+            renderBatch();
             return;
         }
 
@@ -697,7 +575,7 @@
             return '<tr class="' + (on ? 'is-selected is-picked' : '') + '" data-id="' + c.id + '">' +
                 '<td><input type="checkbox" class="mk-pick" data-id="' + c.id + '"' + (on ? ' checked' : '') + '></td>' +
                 '<td>' + esc(c.name) + '</td>' +
-                '<td class="mk-cust-phone">' + waBadge(c) + ' <span>' + esc(c.phone_display) + '</span></td>' +
+                '<td class="mk-cust-phone"><span>' + esc(c.phone_display) + '</span></td>' +
                 '<td>' + lastVisit + '</td>' +
                 '</tr>';
         }).join('');
@@ -712,43 +590,16 @@
                 tr.classList.toggle('is-selected', box.checked);
                 tr.classList.toggle('is-picked', box.checked);
                 $('mkSelectedCount').textContent = Object.keys(state.selected).length + ' selected';
+                // The button's disabled state depends on the selection, so
+                // ticking a box by hand has to refresh it too - otherwise Next
+                // stays live with nothing left to hand over.
+                renderBatch();
             });
         });
+
+        renderBatch();
     }
 
-    // ── Bridge probe (only for the number sync) ──────────────────────────────
-    //
-    // The QR card that used to live here is gone, and with it initBridge,
-    // pollStatus, renderStatus and the two QR polling timers - every one of them
-    // dereferenced a QR element by id, so keeping any of it would throw on load.
-    //
-    // What survives is the part that was never about the QR: deciding whether the
-    // audience's "Check numbers" can run at all. Without it the customer list
-    // sits on stale "unchecked" counts and the button looks broken.
-    /** Read the bridge state from PHP (PHP is what talks to the Node bridge) */
-    function fetchBridgeStatus() {
-        return fetch('api/marketing-status.php', { credentials: 'same-origin' })
-            .then(function (r) { return r.json(); })
-            .catch(function () { return { ok: false, error: 'Could not reach the server.' }; });
-    }
-
-    /**
-     * Ask once per page load whether WhatsApp is linked, and if so work through
-     * the unchecked numbers. Guarded by syncAutoDone because loadAudience() runs
-     * on every search keystroke, and a relink mid-session should not be able to
-     * restart a loop that is already running.
-     */
-    function primeWaSync() {
-        if (state.syncAutoDone) { return; }
-        state.syncAutoDone = true;
-        fetchBridgeStatus().then(function (data) {
-            if (!data || !data.connected) { return; }
-            if (state.totals && state.totals.unchecked > 0) {
-                toast(state.totals.unchecked + ' ta number check korchi…', 'info');
-                startSync(false);
-            }
-        });
-    }
     // ── SMS gateway ─────────────────────────────────────────────────────────
 
     function initSmsSettings() {
@@ -777,8 +628,10 @@
             refreshBadge();
         });
 
-        // Placeholder chips insert into whichever URL box was last touched
-        document.querySelectorAll('.mk-chip').forEach(function (chip) {
+        // Scoped to [data-insert]: the composer's data-token chips match
+        // .mk-chip too, and their missing dataset value would be written into
+        // the URL box as the literal word "undefined".
+        document.querySelectorAll('.mk-chip[data-insert]').forEach(function (chip) {
             chip.addEventListener('click', function () {
                 var target = state.lastUrlField === 'post' ? $('mkSmsPostUrl') : $('mkSmsGetUrl');
                 insertAtCursor(target, chip.dataset.insert);
@@ -840,9 +693,15 @@
         });
 
         var manual = (provider === 'manual');
-        $('mkSmsGatewayBox').classList.toggle('d-none', manual);
-        $('mkSmsManualHint').classList.toggle('d-none', !manual);
-        $('mkSmsModeHint').textContent = manual ? 'Phone SMS app (free)' : providerLabel(provider);
+        // The gateway card was removed from marketing.php, so these nodes may not
+        // exist on the page anymore. Guard them: initChannels() paints the provider
+        // on boot, and a null here would throw and take the whole page's JS down.
+        var box = $('mkSmsGatewayBox');
+        if (box) { box.classList.toggle('d-none', manual); }
+        var hint = $('mkSmsManualHint');
+        if (hint) { hint.classList.toggle('d-none', !manual); }
+        var mode = $('mkSmsModeHint');
+        if (mode) { mode.textContent = manual ? 'Phone SMS app (free)' : providerLabel(provider); }
         refreshBadge();
     }
 
@@ -854,6 +713,8 @@
     /** Status pill: ready only when there is a key and a usable endpoint */
     function refreshBadge() {
         var badge = $('mkGatewayBadge');
+        // The gateway card (and its status pill) no longer render on marketing.php.
+        if (!badge) { return; }
         if (state.smsProvider === 'manual') {
             badge.className = 'badge badge-secondary';
             badge.textContent = 'Phone app';
@@ -979,6 +840,9 @@
 
     function insertAtCursor(field, text) {
         if (!field) { return; }
+        // A missing dataset value would otherwise be written into the field as
+        // the literal word "undefined" and go out to every customer's phone.
+        if (typeof text !== 'string' || text === '') { return; }
         var start = field.selectionStart || field.value.length;
         var end = field.selectionEnd || field.value.length;
         field.value = field.value.slice(0, start) + text + field.value.slice(end);
@@ -1223,14 +1087,6 @@
         }).then(function (res) {
             if (!res.ok) { toast(res.error || 'Campaign create hoyni.', 'error'); return; }
             state.campaignId = res.campaign_id;
-            // The server drops anything it could not confirm as reachable. Say
-            // so here rather than letting the picker and the send list quietly
-            // disagree - a count that shrinks between the confirm dialog and
-            // the run is otherwise impossible to explain.
-            if (res.skipped > 0) {
-                toast(res.skipped + ' ta number campaign e dhuknni - '
-                    + 'WhatsApp confirm hoy nai.', 'info');
-            }
             post('start', { campaign_id: state.campaignId }).then(function (r2) {
                 if (!r2.ok) { toast(r2.error || 'Campaign start hoyni.', 'error'); return; }
                 beginLoop(res.total);
@@ -1322,10 +1178,8 @@
     function appendLog(d) {
         var row = document.createElement('div');
         row.className = 'mk-log-row';
-        // Three outcomes, not two: a number without WhatsApp is skipped by the
-        // pre-send check, which is a different problem from a send that failed.
-        var kind = d.ok ? 'ok' : (d.skipped ? 'skip' : 'bad');
-        var icon = d.ok ? 'fa-check-circle' : (d.skipped ? 'fa-forward' : 'fa-times-circle');
+        var kind = d.ok ? 'ok' : 'bad';
+        var icon = d.ok ? 'fa-check-circle' : 'fa-times-circle';
         row.innerHTML =
             '<div class="mk-log-icon ' + kind + '">' +
             '<i class="fas ' + icon + '"></i></div>' +
@@ -1338,253 +1192,67 @@
         row.scrollIntoView({ block: 'nearest' });
     }
 
-    // ── WhatsApp link + login QR ────────────────────────────────────────────
+    // ── SMS balance ──────────────────────────────────────────────────────────
     /**
-     * The QR image element, created if the page does not already have one.
-     *
-     * The panel is rendered server-side only when a code is already pending, so
-     * on a linked shop there is no <img> in the document at all. Remove QR is
-     * exactly the action that has to work from that state, so the element is
-     * built here rather than relying on a reload - which is also the only way a
-     * fresh code can appear without the shopkeeper doing anything.
-     *
-     * It goes into #mkWaQrSlot, which the server always renders at the foot of
-     * the card, so a code handed over after an unlink lands in the same place as
-     * the one that was there at page load. The card body is the fallback for a
-     * page that somehow lacks the slot.
+     * The remaining credit is not in this database, it is at the gateway, and
+     * asking for it is a blocking HTTP request - so the chip renders empty and
+     * fills in afterwards. The API key never comes near the browser:
+     * api/sms-balance.php does the asking and sends back only the number.
      */
-    function waQrImage() {
-        var img = $('mkWaQrImg');
-        if (img) { return img; }
-
-        var slot = $('mkWaQrSlot');
-        var body = slot || ($('mkWaLinkCard') ? $('mkWaLinkCard').querySelector('.card-body') : null);
-        if (!body) { return null; }
-
-        var panel = document.createElement('div');
-        panel.className = 'wi-qr-panel';
-        panel.id = 'mkWaQrPanel';
-
-        img = document.createElement('img');
-        img.alt = 'WhatsApp login QR code';
-        img.className = 'wi-qr-img';
-        img.id = 'mkWaQrImg';
-
-        var cap = document.createElement('div');
-        cap.className = 'wi-qr-cap';
-        cap.innerHTML = 'Phone er WhatsApp e <strong>Linked devices</strong> kholo, ei QR ta scan korun. '
-            + 'Code ta prai ek minute por naya hoy &mdash; screen e ja ase setai scan korun.';
-
-        panel.appendChild(img);
-        panel.appendChild(cap);
-        body.appendChild(panel);
-        return img;
+    function paintBalance(state, value, why) {
+        var chip = $('mkBalance');
+        if (!chip) { return; }
+        chip.setAttribute('data-state', state);
+        $('mkBalanceValue').textContent = value;
+        if (why) { chip.setAttribute('title', why); }
     }
 
-    /**
-     * Keep the link state, and the code on it, current.
-     *
-     * This is what makes the card usable rather than decorative. WhatsApp Web
-     * issues a code that expires in about a minute and then replaces it, so a QR
-     * shown once at page load goes stale and the scan fails silently - which
-     * looks like the shopkeeper's fault and is not. Swapping the src as the
-     * status response changes the image is the fix; the on-screen code is always
-     * the live one.
-     *
-     * Every few seconds, and only while the page is visible. A background tab on
-     * a shop PC is usually a campaign left running, and polling it at full rate
-     * for the rest of the day buys nothing - the code is only ever read by
-     * somebody looking at the screen.
-     */
-    function pollWaStatus() {
-        return get(API_STATUS).then(function (r) {
-            if (!r || r.ok === false) { return; }
+    function loadBalance(force) {
+        var chip = $('mkBalance');
+        if (!chip) { return; }
+        var btn = $('mkBalanceRefresh');
+        if (btn) { btn.classList.add('is-busy'); }
+        paintBalance('load', '…', 'Gateway balance check hocche…');
 
-            var card = $('mkWaLinkCard');
-            if (card) {
-                card.classList.toggle('is-linked', !!r.connected);
-                card.classList.toggle('is-offline', !r.connected);
+        get(API_BALANCE + (force ? '?refresh=1' : '')).then(function (d) {
+            if (btn) { btn.classList.remove('is-busy'); }
+            var at = d.checked_at ? ' · ' + d.checked_at + ' e' : '';
+
+            if (d.ok && d.balance !== '') {
+                paintBalance('ok', d.balance + ' SMS', 'Gateway e baki credit' + at);
+                return;
             }
-
-            // Whether the shop has a bridge at all is decided server-side and
-            // rendered into the card, because it is a setup step and not
-            // something a status poll can change. Reading it back here keeps
-            // "not set up" from being overwritten with "not connected" five
-            // seconds after load, which would point the shop at a QR that is
-            // never going to arrive.
-            var ready = !card || card.dataset.waReady === '1';
-
-            var text = $('mkWaStatusText');
-            if (text) {
-                text.textContent = r.connected
-                    ? 'Connected'
-                    : (ready ? 'WhatsApp is not connected' : 'WhatsApp is not set up');
+            if (d.ok) {
+                paintBalance('off', '—', 'Gateway balance ta pore na' + at);
+                return;
             }
-
-            // "Live" is a claim about where new numbers come from, and it is
-            // only true while the bridge is uploading. A disconnected bridge
-            // still refreshes this list on schedule, but nothing new can arrive,
-            // so the badge drops to say what is actually happening rather than
-            // sitting there claiming a sync that is not running.
-            var live = $('mkLiveBadge');
-            if (live) {
-                if (r.connected) {
-                    live.classList.remove('d-none');
-                    live.lastElementChild.textContent = 'Live';
-                } else {
-                    live.classList.remove('d-none');
-                    live.lastElementChild.textContent = 'Not syncing';
-                }
-            }
-
-            // The quiet line under the state. Which number is linked is the one
-            // thing a shopkeeper actually wants to see once the dot turns green,
-            // and the JID the bridge reports is not readable - the digits only.
-            var sub = $('mkWaStatusSub');
-            if (sub) {
-                if (r.connected) {
-                    var who = (r.me && (r.me.id || r.me.name)) || '';
-                    who = String(who).replace(/@.*$/, '');
-                    // Strip the country code back to the local 01XXXXXXXXX form the
-                    // rest of this project prints numbers in.
-                    if (/^880\d{10}$/.test(who)) { who = '0' + who.slice(3); }
-                    sub.textContent = who
-                        ? 'Apnar WhatsApp number: ' + who
-                        : 'Apnar number link hoye geche';
-                } else {
-                    sub.textContent = ready
-                        ? 'Apnar personal number link korte QR scan korte hobe'
-                        : 'Bridge URL ar API token ekhono dewa hoye ni - Settings > WhatsApp Bridge';
-                }
-            }
-
-            // Nothing to show while the bridge itself is missing. The card renders
-            // a setup instruction in that state, and a poll must not paper over
-            // it with an empty code panel.
-            if (!ready) { return; }
-
-            // Only assign when the code actually differs. The src is a base64
-            // data URL, so reassigning an identical one on every poll makes the
-            // browser reflow the image and, on a slow connection, flicker.
-            var panel = $('mkWaQrPanel');
-            if (r.qr) {
-                var img = waQrImage();
-                if (img && img.getAttribute('src') !== r.qr) {
-                    img.setAttribute('src', r.qr);
-                }
-                if (panel) { panel.classList.remove('d-none'); }
-            } else if (panel) {
-                // The bridge stopped offering a code - it expired and the bridge
-                // restarted, say. Hide the stale one rather than leaving a code on
-                // screen that cannot work. Deliberately not removing the element:
-                // the next code reuses it.
-                panel.classList.add('d-none');
-            }
-
-            // The offline note is rendered server-side only when the bridge was
-            // down at page load. Toggling it keeps it honest if the link drops
-            // while the page is open, and hides it whenever a code is showing.
-            var note = $('mkWaOfflineNote');
-            if (note) {
-                note.classList.toggle('d-none', !!r.connected || !!r.qr);
-            }
+            var why = d.error || 'Balance pore na.';
+            // No gateway at all is a normal state, not a fault, so it does not
+            // get the amber chip an unreachable provider does.
+            paintBalance(/Gateway set kora nei/i.test(why) ? 'off' : 'warn', '—', why);
+            if (force) { toast(why, 'warn'); }
         });
     }
 
-    /**
-     * Unlink the account, then wait for the bridge to hand back a new code.
-     *
-     * Goes through the campaign API's logout_whatsapp action, which routes to
-     * marketingBridgeCommand() rather than calling the bridge itself. That is
-     * what makes the button work in agent mode too, where there is no URL to
-     * dial: the command is parked in wa_agents and the bridge acts on it at its
-     * next poll.
-     *
-     * The button is disabled while this runs. Logout is not instant on the
-     * bridge side, and a second press would queue a second unlink against an
-     * account that is already coming apart - which is how a "Remove QR" ends up
-     * looking like it did nothing.
-     */
-    function unlinkWa() {
-        var btn = $('mkWaUnlinkBtn');
-        if (btn) { btn.disabled = true; }
-
-        return post('logout_whatsapp', {}).then(function (r) {
-            if (!r || !r.ok) {
-                if (btn) { btn.disabled = false; }
-                toast((r && r.error) || 'QR remove kora jay ni.', 'error');
-                return pollWaStatus();
-            }
-
-            // Unlinking takes a moment, and the bridge only issues a fresh code on
-            // its next boot. Poll a few times rather than once, so the new code
-            // lands on its own instead of needing a manual Refresh.
-            //
-            // "Arrived" is a src on the image, not the element's presence:
-            // waQrImage() builds it on the first poll that carries a code, so
-            // before that the img does not exist and asking for it would create
-            // an empty one and report success immediately.
-            var tries = 0;
-            var wait = function () {
-                return pollWaStatus().then(function () {
-                    var img = $('mkWaQrImg');
-                    if (img && img.getAttribute('src')) { return true; }
-                    tries += 1;
-                    return tries < 10 ? delay(3000).then(wait) : false;
-                });
-            };
-            return wait().then(function (got) {
-                if (btn) { btn.disabled = false; }
-                if (!got) {
-                    toast('QR ashe ni. Bridge cholche kina check kore abar chapun.', 'error');
-                }
-            });
-        });
-    }
-
-    /**
-     * Wire the connection card.
-     *
-     * Guarded on the element existing, so the poll is not started on a page that
-     * does not carry the card. The interval is kept on the returned handle
-     * rather than left to the garbage collector - a repeating timer with nothing
-     * pointing at it can be collected, and the QR then quietly stops refreshing
-     * on exactly the machine that needs it.
-     */
-    function initBridge() {
-        var card = $('mkWaLinkCard');
-        if (!card) { return; }
-
-        var refresh = $('mkWaRefreshBtn');
-        if (refresh) {
-            refresh.addEventListener('click', function () {
-                refresh.disabled = true;
-                pollWaStatus().then(function () { refresh.disabled = false; });
-            });
-        }
-
-        var unlink = $('mkWaUnlinkBtn');
-        if (unlink) { unlink.addEventListener('click', unlinkWa); }
-
-        window.mkWaTimer = setInterval(function () {
-            if (document.hidden) { return; }
-            pollWaStatus();
-        }, 5000);
-
-        // One immediate call, so a link that came up after the page was rendered
-        // shows up without waiting out the first interval.
-        pollWaStatus();
+    function initBalance() {
+        if (!$('mkBalance')) { return; }
+        var btn = $('mkBalanceRefresh');
+        if (btn) { btn.addEventListener('click', function () { loadBalance(true); }); }
+        loadBalance(false);
     }
 
     // ── Boot ────────────────────────────────────────────────────────────────
     document.addEventListener('DOMContentLoaded', function () {
         initChannels();
         initComposer();
-        initSmsSettings();
+        // The SMS gateway settings card was removed from marketing.php; the
+        // provider is now configured elsewhere and SMS credits live on the
+        // dedicated SMS Service page. initSmsSettings() only ever wired that
+        // card's inputs, so it is no longer called - its targets no longer exist.
         initSending();
         initContactFlow();
-        initBridge();       // WhatsApp link state + the rotating login QR
-        loadAudience();   // this is what calls primeWaSync()
+        initBalance();      // gateway credit, fetched after the page painted
+        loadAudience();
 
         // Started after the first load, not instead of it. The immediate call
         // above has to happen on its own so the table is populated the first

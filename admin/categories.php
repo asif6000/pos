@@ -88,7 +88,7 @@ include 'includes/header.php';
 <?php endif; ?>
 
 <!-- Page Header -->
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+<div class="page-toolbar">
     <p class="text-muted">Organize your products by category</p>
     <button class="btn btn-primary" onclick="openModal('add')">
         <i class="fas fa-plus"></i> Add Category

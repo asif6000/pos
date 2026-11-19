@@ -30,8 +30,8 @@ Browser (PHP pages + inline JS)
         │  session cookie, form POST / fetch() to /admin/api/*.php
         ▼
 C:/xampp/htdocs/admin/
-        ├── index.php            entry, redirects
-        ├── landing.php          public marketing/landing page
+        ├── index.php            the site root: serves home.php, or the account's first permitted page
+        ├── home.php          public home page (also served at the site root)
         ├── auth/                login.php, logout.php, register.php
         ├── admin/               the application, ~35 pages
         │   ├── api/             22 JSON endpoints, called by the pages
@@ -302,9 +302,10 @@ cache is keyed on **both** `permissions_version` and `_permissions_role`, so a p
 takes effect on the next request and a role change takes effect on the next request too. Both were
 bugs earlier in this engagement and both are fixed.
 
-Sidebars and the login landing page follow **permissions**, not role names: `permissionNavItems()`
-builds the menu, and `defaultLandingPage()` picks where login goes. All three sidebars
-(`admin/`, `staff/`, `cashier/`) walk that same function.
+Sidebars and the login landing page follow **permissions**, not role names: `config/nav-menu.php`
+owns the one menu table, which `admin/includes/header.php` renders, `permissionNavItems()`
+flattens for the `staff/` sidebar, and `mobile_api/menu.php` sends to the phone app - all
+filtered by the same `navItemVisible()`. `defaultLandingPage()` picks where login goes.
 
 > **`vouchers` is a dead slug.** There is no voucher or coupon table, and no settings key for one.
 > What `process-sale.php` does with "coupon" (lines 310-319) is read the `coupon_*` settings to
@@ -564,6 +565,32 @@ Three things make this harder than it needs to be, and all three have bitten:
 can be whitelisted without first sending a test SMS and reading it back out of an error. The value
 is deliberately not persisted: a stored address would be worse than none, because the whole problem
 is that the address moves.
+
+### 9.5 The other "the gateway is broken" that is not the gateway
+
+`Could not reach the gateway: Failed to connect to bulksmsbd.net port 80 after 0 ms` is curl's word
+for **the request never left the machine**. It is not a bad API key, not a bad URL, and not the 1032
+whitelist — the connection died before the provider saw anything. Public Wi-Fi, some ISPs and most
+antivirus firewalls drop plain port 80, and the resulting message reads like a broken POS, which is
+what sends the shopkeeper looking in the wrong place.
+
+Two changes, because the fix is cheap and the symptom is expensive:
+
+1. **The presets use `https://`.** Verified: `getBalanceApi` and `smsapi` answer identically on 443.
+   There is nothing to lose by never depending on port 80.
+2. **`marketingSmsFetch()` retries over 443 on its own** for any URL still typed as `http://`, but
+   only when curl failed with errno 7 or 28 — refused, or timed out. Both mean no TCP connection was
+   established, so nothing was delivered and the retry **cannot send the same SMS twice**. That is why
+   the retry is safe on the send path, and why it is not applied to a response the provider actually
+   returned.
+
+Every provider round trip goes through that one function, so the send path and the balance check now
+share the fallback instead of each having its own inline `curl_exec()`. `marketingSmsConnectHint()`
+replaces the raw curl string with a message that splits on errno — dead DNS, blocked port, provider
+down — and, using `marketingSmsIsLocalInstall()` for the same reason section 9.4 does, tells a shop
+on XAMPP to suspect their own router or antivirus while a live host is told to change `http` to
+`https`. The host name comes from the URL, so a `custom` provider gets its own name rather than
+bulksmsbd's.
 
 ---
 

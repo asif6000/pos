@@ -4,7 +4,7 @@
  * Returns invoice details for viewing/printing
  */
 
-header;
+header('Content-Type: application/json');
 
 require_once'../../config/db.php';
 startSecureSession();
@@ -22,17 +22,40 @@ if (!$saleId) {
 }
 
 $db = getDB();
+$user = getCurrentUser();
 
 try {
+    // The id arrives from the page, and an invoice carries a customer's name and
+    // phone, so it has to be checked against the shop that rang it: without this
+    // gate any signed-in shop could read another's bill by changing the number.
+    // A counter account (staff/cashier) is gated one step tighter: only the bill
+    // it rang up itself, so no id typed into the URL opens a colleague's sale.
+    $callerStoreId = $user['store_id'] ?? null;
+    $isSuperAdmin = isSuperAdminUser($user);
+    list($ownScope, $ownParams) = ownSalesScopeSql($user, 's');
+    $params = [$saleId];
+    $scope = '';
+    if ($callerStoreId) {
+        $scope = " AND " . saleStoreExpr('s', 'u') . " = ?";
+        $params[] = $callerStoreId;
+    } elseif (!$isSuperAdmin) {
+        $scope = " AND " . saleOwnerScopeSql($user['owner_id'], 's', 'u');
+        $params[] = $user['owner_id'];
+        $params[] = $user['owner_id'];
+    }
+    $scope .= $ownScope;
+    $params = array_merge($params, $ownParams);
+
     // Get sale details
     $stmt = $db->prepare("
-        SELECT s.*, c.name as customer_name, c.phone as customer_phone, u.name as cashier_name 
-        FROM sales s 
-        LEFT JOIN customers c ON s.customer_id = c.id 
-        LEFT JOIN users u ON s.user_id = u.id 
-        WHERE s.id = ?
+        SELECT s.*, c.name as customer_name, c.phone as customer_phone, u.name as cashier_name,
+               " . saleOwnerExpr('s', 'u') . " AS sale_owner_id
+        FROM sales s
+        LEFT JOIN customers c ON s.customer_id = c.id
+        LEFT JOIN users u ON s.user_id = u.id
+        WHERE s.id = ?" . $scope . "
     ");
-    $stmt->execute([$saleId]);
+    $stmt->execute($params);
     $sale = $stmt->fetch();
 
     if (!$sale) {
@@ -45,12 +68,23 @@ try {
     $stmt->execute([$saleId]);
     $items = $stmt->fetchAll();
 
-    // Get settings
+    // Get settings (owner-scoped)
+    // The SALE's owner, not the caller's: this renders someone else's till bill.
+    $invoiceOwnerId = $sale['sale_owner_id'] !== null ? $sale['sale_owner_id'] : $sale['user_id'];
     $settings = [];
-    $settingsStmt = $db->query("SELECT setting_key, setting_value FROM settings");
+    $settingsStmt = $db->prepare("SELECT setting_key, setting_value FROM settings WHERE owner_id = ?");
+    $settingsStmt->execute([$invoiceOwnerId]);
     while ($row = $settingsStmt->fetch()) {
         $settings[$row['setting_key']] = $row['setting_value'];
     }
+
+    // QR is on unless the shop explicitly turned it off. A missing row has to
+    // mean "on" so this matches what the receipts were already doing before the
+    // setting existed. Compared against all three off-spellings on purpose: the
+    // column is text, so an unticked box arrives as '0', and a numeric 0 or an
+    // empty value should mean off too.
+    $qrOn = ($settings['invoice_show_qr'] ?? '1');
+    $qrOn = !($qrOn === '0' || $qrOn === 0 || $qrOn === '');
 
     echo json_encode([
         'success' => true,
@@ -77,6 +111,7 @@ try {
             'shop_phone' => $settings['shop_phone'] ?? '',
             'shop_website' => $settings['shop_website'] ?? 'www.vouser.com',
             'facebook_page' => $settings['facebook_page'] ?? 'https://www.facebook.com',
+            'show_qr' => $qrOn,
             'receipt_footer' => $settings['receipt_footer'] ?? '',
             'voucher_terms' => $settings['voucher_terms'] ?? '',
             'return_qr_url' => $settings['return_qr_url'] ?? '',
@@ -94,6 +129,7 @@ try {
     ]);
 
 } catch (PDOException $e) {
-    echo json_encode(['success' => false, 'message' => 'Database error']);
+    echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
 }
+
 ?>

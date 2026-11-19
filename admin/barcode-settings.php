@@ -7,9 +7,7 @@
 require_once '../config/db.php';
 startSecureSession();
 
-if (!isLoggedIn() || !hasRole('admin')) {
-    redirect('../auth/login.php');
-}
+requirePermission('barcode_settings');
 
 define('PAGE_TITLE', 'Barcode Settings');
 
@@ -86,7 +84,7 @@ include 'includes/header.php';
                 <small class="form-text text-muted">This will appear prominently in bold, larger font at the top of printed labels</small>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+            <div class="cols-2">
                 <!-- Margins -->
                 <div>
                     <h4 style="margin-bottom: 1rem; border-bottom: 1px solid #eee; padding-bottom: 0.5rem;">Margins
@@ -156,7 +154,7 @@ include 'includes/header.php';
                 <div style="grid-column: span 2;">
                     <h4 style="margin-bottom: 1rem; border-bottom: 1px solid #eee; padding-bottom: 0.5rem;">Distances
                         (Inches)</h4>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                    <div class="cols-2">
                         <div class="form-group">
                             <label class="form-label required">Distance between two rows</label>
                             <input type="number" name="row_distance" class="form-control" step="0.0001" min="0"

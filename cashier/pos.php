@@ -407,6 +407,9 @@ include 'includes/header.php';
                 <button class="pos-payment-btn" data-method="bank">
                     <i class="fas fa-university"></i> Bank
                 </button>
+                <button class="pos-payment-btn" data-method="lottery">
+                    <i class="fas fa-ticket"></i> Lottery Sale
+                </button>
             </div>
 
             <!-- Paid Amount -->
@@ -468,9 +471,8 @@ include 'includes/header.php';
 </div>
 
 <script src="<?php echo htmlspecialchars(assetUrl('assets/js/jsbarcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
+<script src="<?php echo htmlspecialchars(assetUrl('assets/js/qrcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
 <script src="<?php echo htmlspecialchars(assetUrl('assets/js/html5-qrcode.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
-<script src="<?php echo htmlspecialchars(assetUrl('assets/js/whatsapp-check.js'), ENT_QUOTES, 'UTF-8'); ?>"
-        data-check-endpoint="../admin/api/check-whatsapp.php"></script>
 <script src="<?php echo htmlspecialchars(assetUrl('assets/js/customer-dup-check.js'), ENT_QUOTES, 'UTF-8'); ?>"
         data-lookup-endpoint="../admin/api/customer-lookup.php"></script>
 <script>
@@ -1228,6 +1230,20 @@ include 'includes/header.php';
             if (result.success) {
                 currentPrintSaleId = result.sale_id || null;
                 showInvoice(result.invoice);
+
+                // The sale is saved; the paper copy is the staff app's job. Only the
+                // app injects this bridge, and it alone decides whether Auto Print is
+                // on. A printer that cannot be reached is reported there, never here.
+                if (window.LanPrinter && typeof window.LanPrinter.printAuto === 'function') {
+                    try {
+                        window.LanPrinter.printAuto(result.invoice, {
+                            jobId: String(result.sale_id || (result.invoice && result.invoice.id) || ''),
+                            source: 'pos'
+                        }).catch(() => {});
+                    } catch (e) {
+                        console.warn('LAN printer:', e);
+                    }
+                }
                 cart = [];
                 updateCartDisplay();
                 document.getElementById('customerId').value = '';
@@ -1247,8 +1263,36 @@ include 'includes/header.php';
         }
     }
 
+    /**
+     * The coupon QR, drawn in the page as an inline SVG.
+     *
+     * It used to be an <img> pointing at api.qrserver.com, which left an empty
+     * box wherever that request did not finish in time: a print preview that
+     * snapshots the page straight away, or a shop PC with no internet at all.
+     * Drawing it here means the preview, the printout and the slip all carry
+     * the same code and none of them need the network.
+     */
+    function couponQrSvg(url, size) {
+        if (!url || typeof qrcode === 'undefined') return '';
+        try {
+            const qr = qrcode(0, 'M');
+            qr.addData(url);
+            qr.make();
+            return qr.createSvgTag({ cellSize: 4, margin: 1, scalable: true })
+                .replace('<svg ', '<svg style="width:' + size + 'px;height:' + size + 'px;" ');
+        } catch (e) {
+            return '';
+        }
+    }
+
     function showInvoice(invoice) {
         const facebookUrl = `<?php echo sanitize($settings['facebook_page'] ?? 'https://www.facebook.com'); ?>`;
+        // Controlled from Settings > Invoice. Defaults to on when absent, which
+        // is how the receipt behaved before the setting existed.
+        const showQr = <?php
+            $qrOn = ($settings['invoice_show_qr'] ?? '1');
+            echo !($qrOn === '0' || $qrOn === 0 || $qrOn === '') ? 'true' : 'false';
+        ?>;
         const shopName = `<?php echo sanitize($settings['shop_name'] ?? 'POS System'); ?>`;
         const shopAddress = `<?php echo sanitize($settings['shop_address'] ?? ''); ?>`;
         const shopPhone = `<?php echo sanitize($settings['shop_phone'] ?? ''); ?>`;
@@ -1334,35 +1378,18 @@ include 'includes/header.php';
             </div>
             ` : ''}
 
-            <div style="margin-top: 10px; border-top: 1px dashed #000; padding-top: 8px; font-size: 10px;">
-                <p style="margin: 0 0 4px 0; font-size: 11px; font-weight: bold;">পণ্য পরিবর্তন নীতি</p>
-                <p style="margin: 0; white-space: pre-line;">ক্রয়ের তারিখ থেকে ৭ দিনের মধ্যে পণ্য পরিবর্তন করা যাবে।\nপণ্যটি অবশ্যই অব্যবহৃত, অরিজিনাল এবং রসিদসহ হতে হবে।\nকোনো নগদ টাকা ফেরত দেওয়া হবে না।\nপণ্য পরিবর্তন পণ্যের প্রাপ্যতা ও দোকানের নীতিমালার ওপর নির্ভরশীল।</p>
-            </div>
             
-            ${invoice.coupon_status == '1' ? `
-            <div style="page-break-before: always; margin-top: 20px; border-top: 1px dashed #000; padding-top: 20px; font-family: monospace;">
-                <div style="border: 2px solid #000; padding: 10px; border-radius: 8px;">
-                    <h3 style="text-align: center; margin: 0 0 4px 0; font-size: 14px; text-transform: uppercase;">${invoice.coupon_title}</h3>
-                    <p style="text-align: center; margin: 0 0 8px 0; font-size: 11px;">${invoice.coupon_subtitle}</p>
+            
+            ${invoice.coupon_status == '1' ? (() => {
+                const totalQty = invoice.items.reduce((sum, item) => sum + parseInt(item.quantity || 1), 0);
 
-                    <div style="text-align: center; margin-bottom: 8px;">
-                        <img src="https://api.qrserver.com/v1/create-qr-code/?size=60x60&data=${encodeURIComponent(facebookUrl)}" alt="Facebook QR" style="width: 60px; height: 60px; border-radius: 4px;" />
-                        <p style="margin: 2px 0 0 0; font-size: 9px;">Scan for Facebook</p>
-                    </div>
-
-                    <div style="text-align: center; font-size: 10px; border: 1px dashed #000; padding: 4px; border-radius: 4px; margin-bottom: 6px;">
-                        ${invoice.coupon_prize_1} <br/> ${invoice.coupon_prize_2} <br/> ${invoice.coupon_prize_3} <br/> ${invoice.coupon_prize_4} <br/> ${invoice.coupon_prize_5}
-                    </div>
-
-                    <div style="text-align: center; font-size: 10px; margin-bottom: 4px;">${invoice.coupon_total_winners}</div>
-
-                    <div style="font-size: 9px; text-align: center; border-bottom: 1px dashed #000; padding-bottom: 6px; margin-bottom: 8px;">
-                        ${invoice.coupon_announcement}
-                    </div>
-
-                    <div style="font-size: 11px;">
-                        <div style="text-align: center; margin-bottom: 6px; border: 1px solid #000; padding: 4px; font-size: 13px;">
-                            SC-${invoice.invoice_number}
+                // Build the N slips (one per qty)
+                let slips = '';
+                for (let i = 1; i <= totalQty; i++) {
+                    slips += `
+                    <div style="margin-top: 10px; border: 1px solid #000; padding: 6px; border-radius: 4px; font-size: 11px; page-break-inside: avoid;">
+                        <div style="text-align: center; margin-bottom: 6px; border: 1px solid #000; padding: 4px; font-size: 13px; font-weight: bold;">
+                            SC-${invoice.invoice_number}${totalQty > 1 ? '-' + i : ''}
                         </div>
                         <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                             <span>Name:</span> <span>${invoice.customer_name}</span>
@@ -1373,12 +1400,31 @@ include 'includes/header.php';
                         <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                             <span>Date:</span> <span>${invoice.date || ''}</span>
                         </div>
-                        <div style="margin-top: 25px; text-align: right; border-top: 1px dashed #000; display: inline-block; float: right; padding-top: 4px;">Shop seal & signature</div>
                         <div style="clear: both;"></div>
+                    </div>`;
+                }
+
+                // ONE coupon header + all slips
+                return `
+            <div style="page-break-before: always; margin-top: 20px; border-top: 1px dashed #000; padding-top: 20px; font-family: monospace;">
+                <div style="border: 2px solid #000; padding: 10px; border-radius: 8px;">
+                    <h3 style="text-align: center; margin: 0 0 4px 0; font-size: 14px; text-transform: uppercase;">${invoice.coupon_title}</h3>
+                    <p style="text-align: center; margin: 0 0 8px 0; font-size: 11px;">${invoice.coupon_subtitle}</p>
+                    <div style="text-align: center; margin-bottom: 8px;">
+                        ${showQr ? `<div style="display: flex; justify-content: center;">${couponQrSvg(facebookUrl, 60)}</div>` : ''}
+                        ${showQr ? `<p style="margin: 2px 0 0 0; font-size: 9px;">Scan for Facebook</p>` : ''}
                     </div>
+                    <div style="text-align: center; font-size: 10px; border: 1px dashed #000; padding: 4px; border-radius: 4px; margin-bottom: 6px;">
+                        ${invoice.coupon_prize_1} <br/> ${invoice.coupon_prize_2} <br/> ${invoice.coupon_prize_3} <br/> ${invoice.coupon_prize_4} <br/> ${invoice.coupon_prize_5}
+                    </div>
+                    <div style="text-align: center; font-size: 10px; margin-bottom: 4px;">${invoice.coupon_total_winners}</div>
+                    <div style="font-size: 9px; text-align: center; border-bottom: 1px dashed #000; padding-bottom: 6px; margin-bottom: 8px;">
+                        ${invoice.coupon_announcement}
+                    </div>
+                    ${slips}
                 </div>
-            </div>
-            ` : ''}
+            </div>`;
+            })() : ''}
         </div>
     `;
         document.getElementById('invoiceModal').classList.add('active');
@@ -1415,26 +1461,7 @@ include 'includes/header.php';
     async function printInvoice() {
         markAsPrinted();
         const content = document.getElementById('printableInvoice').outerHTML;
-        
-        // Pre-fetch all QR images as base64 data URIs
-        let modifiedContent = content;
-        const qrMatches = content.match(/src="(https:\/\/api\.qrserver\.com[^"]+)"/g);
-        if (qrMatches) {
-            for (const match of qrMatches) {
-                const url = match.match(/src="([^"]+)"/)[1];
-                try {
-                    const resp = await fetch(url);
-                    const blob = await resp.blob();
-                    const base64 = await new Promise((resolve) => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => resolve(reader.result);
-                        reader.readAsDataURL(blob);
-                    });
-                    modifiedContent = modifiedContent.replace(url, base64);
-                } catch(e) {}
-            }
-        }
-        
+
         const w = window.open('', '_blank');
         w.document.write(`
             <!DOCTYPE html>
@@ -1463,7 +1490,7 @@ include 'includes/header.php';
             </head>
             <body>
                 <div style="max-width: 800px; margin: 0 auto; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);">
-                    ${modifiedContent}
+                    ${content}
                 </div>
             </body>
             </html>
@@ -1624,13 +1651,6 @@ include 'includes/header.php';
                 selectCustomer(result.customer.id);
 
                 closeCustomerModal();
-                alert('Customer added successfully!');
-
-                // Saved, so the sale can carry on. The WhatsApp probe runs
-                // behind it and reports back on its own.
-                if (window.PosWhatsApp) {
-                    window.PosWhatsApp.verifyAndReport(result.customer);
-                }
             } else {
                 alert(result.message || 'Error adding customer');
             }

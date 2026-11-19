@@ -7,9 +7,7 @@
 require_once'../config/db.php';
 startSecureSession();
 
-if (!isLoggedIn() || !hasRole('admin')) {
-    redirect('../auth/login.php');
-}
+requirePermission('vouchers');
 
 define('PAGE_TITLE', 'Voucher Settings');
 
@@ -41,16 +39,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // on, which is the wrong default here: the promo is what pushes the
             // SMS past one segment, and the shop pays for the second one.
             'invoice_sms_promo' => isset($_POST['invoice_sms_promo']) ? 1 : 0,
-            'invoice_sms_link'  => isset($_POST['invoice_sms_link']) ? 1 : 0,
+            // invoice_sms_link is no longer written or read: an invoice SMS never
+            // carries the link. The row is left alone rather than deleted, so a
+            // shop that had it on keeps its history.
             'invoice_sms_max_items' => max(1, min(30, (int)($_POST['invoice_sms_max_items'] ?? 8))),
             // Whitelisted rather than sanitized alone: a select can only send one
-            // of three values, and anything else arriving here is either a hand
+            // of two values, and anything else arriving here is either a hand
             // edit or a stale row. Both land on 'auto', which is the behaviour
             // that still delivers - a shop is never locked out of its own
-            // invoices by a bad setting.
+            // invoices by a bad setting. A stale value left over from the
+            // removed channel reads as 'auto' the same way.
             'invoice_sms_channel' => (function () {
                 $c = strtolower(trim((string)($_POST['invoice_sms_channel'] ?? 'auto')));
-                return in_array($c, ['auto', 'whatsapp', 'sms'], true) ? $c : 'auto';
+                return in_array($c, ['auto', 'sms'], true) ? $c : 'auto';
             })(),
         ];
 
@@ -220,13 +221,13 @@ include'includes/header.php';
                             <select name="invoice_sms_channel" class="form-control" style="max-width:340px;">
                                 <?php
                                 $channelNow = strtolower(trim((string)($settings['invoice_sms_channel'] ?? 'auto')));
-                                if (!in_array($channelNow, ['auto', 'whatsapp', 'sms'], true)) {
+                                // A stale value from the removed channel reads as 'auto'.
+                                if (!in_array($channelNow, ['auto', 'sms'], true)) {
                                     $channelNow = 'auto';
                                 }
                                 $channelOptions = [
-                                    'auto'     => 'Auto - SMS tried first, WhatsApp-e fallback',
-                                    'whatsapp' => 'WhatsApp only - SMS credit lagbe na',
-                                    'sms'      => 'SMS only - WhatsApp use hobe na',
+                                    'auto' => 'Auto - SMS e pathay (default)',
+                                    'sms'  => 'SMS only',
                                 ];
                                 foreach ($channelOptions as $val => $label) {
                                     echo '<option value="' . $val . '"'
@@ -236,13 +237,10 @@ include'includes/header.php';
                                 ?>
                             </select>
                             <small class="text-muted">
-                                <strong>Auto</strong> thakle prothome SMS choley, SMS na gele ei text-ta
-                                WhatsApp-e pathiye dey - shop er nijer bridge diye, tai kono SMS charge
-                                lage na. Eta-i setting ta jodi gateway kaj na kore (mane provider e
-                                server IP whitelist nai) tabo-o invoice customer er paithay.
-                                <strong>WhatsApp only</strong> thakle SMS credit ekdom chhay, WhatsApp-i
-                                jabe. Bridge agent mode e nao thakle WhatsApp pathano jabe na -
-                                Settings &gt; WhatsApp Bridge e chalu korte hobe.
+                                Invoice ta customer er number e <strong>SMS</strong> hisabe jay.
+                                Gateway kaj na korle (jemon provider e server IP whitelist
+                                nai) SMS ta pathano jabe na - tokhon POS e text ta dekhe
+                                cashier nijei phone theke pathate pare.
                             </small>
                         </div>
                     </div>
@@ -266,21 +264,11 @@ include'includes/header.php';
                             </small>
                         </div>
 
-                        <div class="form-group mb-0">
-                            <label style="display:flex; align-items:flex-start; gap:0.6rem; cursor:pointer;">
-                                <input type="checkbox" name="invoice_sms_link" value="1"
-                                    <?php echo (($settings['invoice_sms_link'] ?? '0') === '1') ? 'checked' : ''; ?>
-                                    style="margin-top:0.2rem;">
-                                <span>
-                                    <strong>SMS e full invoice link-o pathao</strong><br>
-                                    <small class="text-muted">
-                                        OFF thakle SMS e shudhu invoice-e text thakbe, link thakbe
-                                        na - mane kom charge. ON thakle customer browser e
-                                        puro invoice dekhete parbe.
-                                    </small>
-                                </span>
-                            </label>
-                        </div>
+                        <p class="text-muted mb-0" style="font-size:0.85rem;">
+                            SMS e invoice link jabe na - puro receipt-e item ar total
+                            already ache, ar link ta-i charge ekhat e barate dukhbe
+                            (duk khora segment).
+                        </p>
                     </div>
                 </div>
 

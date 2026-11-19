@@ -5,6 +5,7 @@
  */
 
 require_once '../config/db.php';
+require_once '../config/sms_usage.php';
 startSecureSession();
 
 // Check authentication
@@ -28,14 +29,37 @@ $todayEnd = date('Y-m-d 23:59:59');
 $monthStart = date('Y-m-01 00:00:00');
 $monthEnd = date('Y-m-t 23:59:59');
 
+// Is this the platform account, which has no shop of its own and rings goods from
+// every one of them at one till? The shared test, not a local spelling of it: an
+// empty owner column also describes a shop's own keeper, and treating that as the
+// platform account would put every other shop's takings on this page.
+$isSuper = isSuperAdminUser($user);
+
+// A counter account (staff/cashier) sees only the sales it rang up itself; the
+// shop's totals belong to the owner. Every sales query below receives this id,
+// including the ones that do not go through scopeSql() (commission, store-wise,
+// top products and the return money that comes off those sales).
+$ownUserId = isOwnSalesOnlyUser($user) ? (int)$user['id'] : 0;
+
 // Scope helper: applies store filter to a query
-function scopeSql($sql, $store_id, $owner_id) {
+function scopeSql($sql, $store_id, $owner_id, $is_super = false, $own_user_id = 0) {
+    if ($own_user_id) {
+        // Narrower than any store/owner scope: the person, not the shop.
+        $sql .= " JOIN users u ON s.user_id = u.id WHERE s.user_id = ?";
+        return [$sql, [$own_user_id]];
+    }
     if ($store_id) {
-        $sql .= " JOIN users u ON s.user_id = u.id WHERE u.store_id = ?";
+        $sql .= " JOIN users u ON s.user_id = u.id WHERE " . saleStoreExpr() . " = ?";
         return [$sql, [$store_id]];
     }
-    $sql .= " JOIN users u ON s.user_id = u.id WHERE " . ownerScopeSql('u', $owner_id);
-    // Two placeholders (see ownerScopeSql), so the owner id is bound twice.
+    if ($is_super) {
+        // Requirement 1 and 10 together mean the platform account's figures cover
+        // every shop it can sell from, so no owner filter narrows its totals. It
+        // owns nothing, so there is no other shop's money it could be reading.
+        return [$sql . " JOIN users u ON s.user_id = u.id WHERE 1=1", []];
+    }
+    $sql .= " JOIN users u ON s.user_id = u.id WHERE " . saleOwnerScopeSql($owner_id);
+    // Two placeholders (see saleOwnerScopeSql), so the owner id is bound twice.
     // Returning it once here is what produced
     // SQLSTATE[HY093]: Invalid parameter number on the first query of the page.
     return [$sql, [$owner_id, $owner_id]];
@@ -69,34 +93,61 @@ function ownerScopeSql($alias, $owner_id) {
     return "({$alias}.owner_id = ? OR ({$alias}.owner_id IS NULL AND {$alias}.id = ?))";
 }
 
+/**
+ * Does cashbook_entries carry the source_type column yet?
+ *
+ * It is what lets the Net Balance card tell a refund or a book transfer apart
+ * from a real expense. An install whose migration has not run has no such
+ * column - and, because every writer of those two kinds of line needs it, no
+ * such lines either.
+ *
+ * @return bool
+ */
+function cashbookHasSourceType()
+{
+    static $has = null;
+    if ($has !== null) {
+        return $has;
+    }
+    try {
+        $has = !empty(getDB()->query("SHOW COLUMNS FROM cashbook_entries LIKE 'source_type'")->fetchAll());
+    } catch (Throwable $e) {
+        $has = false;
+    }
+    return $has;
+}
+
 try {
     // ── Today's Sales ────────────────────────────────────────────────────────
-    list($sql, $params) = scopeSql("SELECT COALESCE(SUM(s.total), 0) as total, COUNT(*) as count FROM sales s", $store_id, $owner_id);
+    list($sql, $params) = scopeSql("SELECT COALESCE(SUM(s.total), 0) as total, COUNT(*) as count FROM sales s", $store_id, $owner_id, $isSuper, $ownUserId);
     $sql .= " AND s.created_at BETWEEN ? AND ?";
     $params[] = $todayStart; $params[] = $todayEnd;
     $stmt = $db->prepare($sql); $stmt->execute($params);
     $todaySales = $stmt->fetch();
 
     // ── Monthly Sales ────────────────────────────────────────────────────────
-    list($sql, $params) = scopeSql("SELECT COALESCE(SUM(s.total), 0) as total, COUNT(*) as count FROM sales s", $store_id, $owner_id);
+    list($sql, $params) = scopeSql("SELECT COALESCE(SUM(s.total), 0) as total, COUNT(*) as count FROM sales s", $store_id, $owner_id, $isSuper, $ownUserId);
     $sql .= " AND s.created_at BETWEEN ? AND ?";
     $params[] = $monthStart; $params[] = $monthEnd;
     $stmt = $db->prepare($sql); $stmt->execute($params);
     $monthlySales = $stmt->fetch();
 
     // ── All-time Sales ───────────────────────────────────────────────────────
-    list($sql, $params) = scopeSql("SELECT COALESCE(SUM(s.total), 0) as total, COUNT(*) as count FROM sales s", $store_id, $owner_id);
+    list($sql, $params) = scopeSql("SELECT COALESCE(SUM(s.total), 0) as total, COUNT(*) as count FROM sales s", $store_id, $owner_id, $isSuper, $ownUserId);
     $stmt = $db->prepare($sql); $stmt->execute($params);
     $allTimeSales = $stmt->fetch();
 
     // ── Commission (৳5 per unit sold) ────────────────────────────────────────
     $commissionPerUnit = 5.00;
     $commScope = "FROM sales s JOIN sale_items si ON si.sale_id = s.id JOIN users u ON s.user_id = u.id WHERE";
-    if ($store_id) {
-        $commWhere = " u.store_id = ?";
+    if ($ownUserId) {
+        $commWhere = " s.user_id = ?";
+        $commParams = [$ownUserId];
+    } elseif ($store_id) {
+        $commWhere = " " . saleStoreExpr() . " = ?";
         $commParams = [$store_id];
     } else {
-        $commWhere = " " . ownerScopeSql('u', $owner_id);
+        $commWhere = " " . saleOwnerScopeSql($owner_id);
         $commParams = [$owner_id, $owner_id];
     }
 
@@ -105,87 +156,173 @@ try {
     $stmt->execute(array_merge($commParams, [$todayStart, $todayEnd]));
     $commissionToday = (float)$stmt->fetchColumn();
 
-    $stmt = $db->prepare("SELECT COALESCE(SUM(si.quantity), 0) * $commissionPerUnit as commission
-        $commScope $commWhere");
-    $stmt->execute($commParams);
-    $commissionAllTime = (float)$stmt->fetchColumn();
-
-    // ── Yesterday's Sales (for comparison) ───────────────────────────────────
-    $yStart = date('Y-m-d 00:00:00', strtotime('-1 day'));
-    $yEnd = date('Y-m-d 23:59:59', strtotime('-1 day'));
-    list($sql, $params) = scopeSql("SELECT COALESCE(SUM(s.total), 0) as total FROM sales s", $store_id, $owner_id);
+    // ── This Year ────────────────────────────────────────────────────────────
+    list($sql, $params) = scopeSql("SELECT COALESCE(SUM(s.total), 0) FROM sales s", $store_id, $owner_id, $isSuper, $ownUserId);
     $sql .= " AND s.created_at BETWEEN ? AND ?";
-    $params[] = $yStart; $params[] = $yEnd;
+    $params[] = date('Y-01-01 00:00:00'); $params[] = $todayEnd;
     $stmt = $db->prepare($sql); $stmt->execute($params);
-    $yesterdayTotal = (float)$stmt->fetchColumn();
+    $yearTotal = (float)$stmt->fetchColumn();
 
-    // ── Sales by Store (Today) ───────────────────────────────────────────────
-    // raw_owner_id, NOT owner_id. getCurrentUser() always fills owner_id in with
-    // the user's own id when the column is NULL, so testing it here was always
-    // false and $isSuper never became true - a top-level admin was silently
-    // scoped to their own stores like an ordinary owner. raw_owner_id is the
-    // untouched column, and NULL there is exactly what "is a super admin" means.
-    $isSuper = ($user['role'] === 'admin' && empty($user['raw_owner_id']));
-    $params = [];
-    $sql = "SELECT st.id as store_id, st.name as store_name, COUNT(s.id) as sale_count, COALESCE(SUM(s.total), 0) as total
-            FROM stores st
-            LEFT JOIN users u ON u.store_id = st.id
-            LEFT JOIN sales s ON s.user_id = u.id
-            WHERE 1=1";
-    if (!$isSuper) { $sql .= " AND st.owner_id = ?"; $params[] = $owner_id; }
-    if ($store_id) { $sql .= " AND st.id = ?"; $params[] = $store_id; }
-    $sql .= " AND s.created_at BETWEEN ? AND ? GROUP BY st.id, st.name ORDER BY total DESC";
-    $params[] = $todayStart; $params[] = $todayEnd;
+    // ── Sales by Store ───────────────────────────────────────────────────────
+    // $isSuper was settled above, before the KPI cards, so the table below and
+    // those cards cannot disagree about whose money the page shows.
+
+    /**
+     * One store's share of the takings over a window.
+     *
+     * Grouped on the sale's own store rather than on the cashier's, because a
+     * Super Admin till rings up several shops in one basket and each of those bills
+     * belongs to the shop whose shelf it came off. A window of null is all-time.
+     *
+     * @return array [sql, params]
+     */
+    function storeSalesWindowSql($store_id, $owner_id, $isSuper, $start = null, $end = null, $ownUserId = 0)
+    {
+        $scope = '';
+        $params = [];
+
+        if ($ownUserId) {
+            // A counter account's per-store row counts its own bills only.
+            $scope .= " AND s.user_id = ?";
+            $params[] = $ownUserId;
+        } elseif ($store_id) {
+            $scope .= " AND " . saleStoreExpr() . " = ?";
+            $params[] = $store_id;
+        } elseif (!$isSuper) {
+            // Inside one tenant's money. A top-level account that only *looks*
+            // like the platform one is a shop's own keeper with an empty owner
+            // column, so this branch is what keeps another shop's takings off
+            // their page; a verified platform admin has no shop of their own and
+            // is shown each shop's own figures.
+            $scope .= " AND " . saleOwnerScopeSql($owner_id);
+            $params[] = $owner_id;
+            $params[] = $owner_id;
+        }
+
+        if ($start !== null) {
+            $scope .= " AND s.created_at BETWEEN ? AND ?";
+            $params[] = $start;
+            $params[] = $end;
+        }
+
+        // The store list stays the caller's own: their till, or their shop's
+        // shelves. Only a platform Super Admin, who has no shop of their own, is
+        // shown every shop.
+        if ($store_id) {
+            $stFilter = " AND st.id = ?";
+            $params[] = $store_id;
+        } elseif (!$isSuper) {
+            $stFilter = " AND st.owner_id = ?";
+            $params[] = $owner_id;
+        } else {
+            $stFilter = '';
+        }
+
+        $sql = "SELECT st.id AS store_id, st.name AS store_name,
+                       COALESCE(agg.sale_count, 0) AS sale_count,
+                       COALESCE(agg.total, 0) AS total
+                FROM stores st
+                LEFT JOIN (
+                    SELECT " . saleStoreExpr() . " AS sid,
+                           COUNT(*) AS sale_count, COALESCE(SUM(s.total), 0) AS total
+                    FROM sales s
+                    JOIN users u ON s.user_id = u.id
+                    WHERE 1=1" . $scope . "
+                    GROUP BY sid
+                ) agg ON agg.sid = st.id
+                WHERE st.status = 'active'" . $stFilter . "
+                ORDER BY total DESC";
+
+        return [$sql, $params];
+    }
+
+    /**
+     * Return and exchange money per store over a window, keyed by store id.
+     *
+     * `returns` has no store column, so a return is filed under the store of the
+     * sale the goods came back from - the same store the refund cash was booked
+     * against, and the only answer that is right when the bill spanned two shops.
+     */
+    function storeReturnsByWindow($owner_id, $store_id, $start, $end, $isSuper = false, $ownUserId = 0)
+    {
+        ensureReturnExchangeColumns();
+
+        // Scoped the same way as the sales window above, and for the same reason:
+        // an account that merely has an empty owner column is a shop's own keeper,
+        // so the refund figures stay inside their tenant unless the shared test
+        // says this is the platform account, which owns no shop at all.
+        $params = [];
+        $scope = '';
+        if ($ownUserId) {
+            // Money handed back on this person's own bills, so the net figure
+            // beside Today's Sale is their sale minus their refunds.
+            $scope = " AND s.user_id = ?";
+            $params = [$ownUserId];
+        } elseif (!$isSuper) {
+            $scope = " AND " . saleOwnerScopeSql($owner_id);
+            $params = [$owner_id, $owner_id];
+        }
+        if ($store_id) {
+            $scope .= " AND " . saleStoreExpr() . " = ?";
+            $params[] = $store_id;
+        }
+        $params[] = $start;
+        $params[] = $end;
+
+        try {
+            $stmt = getDB()->prepare("SELECT " . saleStoreExpr() . " AS sid,
+                       COALESCE(SUM(r.refund_amount), 0) AS refund,
+                       COALESCE(SUM(r.extra_amount_received), 0) AS extra,
+                       COALESCE(SUM(CASE WHEN r.transaction_type = 'exchange' THEN r.refund_amount ELSE 0 END), 0) AS exchange_refund
+                     FROM returns r
+                     JOIN sales s ON r.sale_id = s.id
+                     JOIN users u ON s.user_id = u.id
+                     WHERE 1=1" . $scope . " AND r.created_at BETWEEN ? AND ?
+                     GROUP BY sid");
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll();
+        } catch (PDOException $e) {
+            // No exchange columns yet means no exchange money to show, which is the
+            // same answer as an empty one.
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            $extra = round((float)$row['extra'], 2);
+            $out[(int)$row['sid']] = [
+                'refund'     => round((float)$row['refund'], 2),
+                'extra'      => $extra,
+                'exchange_refund' => round((float)$row['exchange_refund'], 2),
+                'net_effect' => round($extra - (float)$row['exchange_refund'], 2),
+            ];
+        }
+        return $out;
+    }
+
+    list($sql, $params) = storeSalesWindowSql($store_id, $owner_id, $isSuper, $todayStart, $todayEnd, $ownUserId);
     $stmt = $db->prepare($sql); $stmt->execute($params);
     $storeSales = $stmt->fetchAll();
 
-    // ── Sales by Store (This Month + All-time) for complete store-wise report ─
-    $params = [];
-    $sql = "SELECT st.id as store_id, st.name as store_name,
-            COUNT(s.id) as sale_count, COALESCE(SUM(s.total), 0) as total
-            FROM stores st
-            LEFT JOIN users u ON u.store_id = st.id
-            LEFT JOIN sales s ON s.user_id = u.id
-            WHERE 1=1";
-    if (!$isSuper) { $sql .= " AND st.owner_id = ?"; $params[] = $owner_id; }
-    if ($store_id) { $sql .= " AND st.id = ?"; $params[] = $store_id; }
-    $sql .= " AND s.created_at BETWEEN ? AND ? GROUP BY st.id, st.name ORDER BY total DESC";
-    $params[] = $monthStart; $params[] = $monthEnd;
+    list($sql, $params) = storeSalesWindowSql($store_id, $owner_id, $isSuper, $monthStart, $monthEnd, $ownUserId);
     $stmt = $db->prepare($sql); $stmt->execute($params);
     $storeSalesMonth = $stmt->fetchAll();
 
-    $params = [];
-    $sql = "SELECT st.id as store_id, st.name as store_name,
-            COUNT(s.id) as sale_count, COALESCE(SUM(s.total), 0) as total
-            FROM stores st
-            LEFT JOIN users u ON u.store_id = st.id
-            LEFT JOIN sales s ON s.user_id = u.id
-            WHERE 1=1";
-    if (!$isSuper) { $sql .= " AND st.owner_id = ?"; $params[] = $owner_id; }
-    if ($store_id) { $sql .= " AND st.id = ?"; $params[] = $store_id; }
-    $sql .= " GROUP BY st.id, st.name ORDER BY total DESC";
+    list($sql, $params) = storeSalesWindowSql($store_id, $owner_id, $isSuper, null, null, $ownUserId);
     $stmt = $db->prepare($sql); $stmt->execute($params);
     $storeSalesAll = $stmt->fetchAll();
+
+    $storeMoney = storeReturnsByWindow($owner_id, $store_id, $todayStart, $todayEnd, $isSuper, $ownUserId);
 
     // ── Total Products ───────────────────────────────────────────────────────
     $stmt = $db->prepare("SELECT COUNT(*) as count FROM products p JOIN store_stocks ss ON p.id = ss.product_id JOIN stores st ON ss.store_id = st.id WHERE st.owner_id = ? AND p.status = 'active'");
     $stmt->execute([$owner_id]);
     $totalProducts = $stmt->fetch()['count'];
 
-    // ── Total Categories ─────────────────────────────────────────────────────
-    $stmt = $db->prepare("SELECT COUNT(*) as count FROM categories WHERE status = 'active' AND owner_id = ?");
-    $stmt->execute([$owner_id]);
-    $totalCategories = $stmt->fetch()['count'];
-
     // ── Total Customers ──────────────────────────────────────────────────────
     $stmt = $db->prepare("SELECT COUNT(*) as count FROM customers WHERE owner_id = ?");
     $stmt->execute([$owner_id]);
     $totalCustomers = $stmt->fetch()['count'];
-
-    // ── Total Stores ─────────────────────────────────────────────────────────
-    $stmt = $db->prepare("SELECT COUNT(*) as count FROM stores WHERE status = 'active' AND owner_id = ?");
-    $stmt->execute([$owner_id]);
-    $totalStores = $stmt->fetch()['count'];
 
     // ── Total Staff & Salary Due ─────────────────────────────────────────────
     $stmt = $db->prepare("SELECT COUNT(*) as count FROM staff WHERE owner_id = ? AND status = 'active'");
@@ -197,42 +334,27 @@ try {
         $stmt = $db->prepare("SELECT COUNT(*) as count FROM store_stocks ss JOIN products p ON ss.product_id = p.id WHERE ss.store_id = ? AND ss.quantity <= p.min_stock AND p.status = 'active'");
         $stmt->execute([$store_id]);
         $lowStockCount = $stmt->fetch()['count'];
-        $stmt = $db->prepare("SELECT p.id, p.name, ss.quantity as stock, p.min_stock FROM store_stocks ss JOIN products p ON ss.product_id = p.id WHERE ss.store_id = ? AND ss.quantity <= p.min_stock AND p.status = 'active' ORDER BY ss.quantity ASC LIMIT 6");
-        $stmt->execute([$store_id]);
-        $lowStockProducts = $stmt->fetchAll();
     } else {
         $stmt = $db->prepare("SELECT COUNT(*) as count FROM store_stocks ss JOIN products p ON ss.product_id = p.id JOIN stores st ON ss.store_id = st.id WHERE st.owner_id = ? AND ss.quantity <= p.min_stock AND p.status = 'active'");
         $stmt->execute([$owner_id]);
         $lowStockCount = $stmt->fetch()['count'];
-        $stmt = $db->prepare("SELECT p.id, p.name, SUM(ss.quantity) as stock, p.min_stock
-                                FROM store_stocks ss
-                                JOIN products p ON ss.product_id = p.id
-                                JOIN stores st ON ss.store_id = st.id
-                                WHERE st.owner_id = ? AND p.status = 'active'
-                                GROUP BY p.id
-                                HAVING stock <= p.min_stock
-                                ORDER BY stock ASC LIMIT 6");
-        $stmt->execute([$owner_id]);
-        $lowStockProducts = $stmt->fetchAll();
     }
 
-    // ── Recent Sales ─────────────────────────────────────────────────────────
-    list($sql, $params) = scopeSql("SELECT s.*, c.name as customer_name FROM sales s LEFT JOIN customers c ON s.customer_id = c.id", $store_id, $owner_id);
-    $sql .= " ORDER BY s.created_at DESC LIMIT 10";
-    $stmt = $db->prepare($sql); $stmt->execute($params);
-    $recentSales = $stmt->fetchAll();
-
     // ── Top Selling Products (This Month) ────────────────────────────────────
-    $sql = "SELECT p.name, SUM(si.quantity) as total_qty, SUM(si.total_price) as total_revenue
+    $sql = "SELECT p.name, p.image, SUM(si.quantity) as total_qty, SUM(si.total_price) as total_revenue
         FROM sale_items si
         JOIN products p ON si.product_id = p.id
         JOIN sales s ON si.sale_id = s.id";
     $params = [];
-    if ($store_id) {
-        $sql .= " JOIN users u ON s.user_id = u.id WHERE u.store_id = ? AND s.created_at BETWEEN ? AND ?";
+    if ($ownUserId) {
+        // A counter account ranks the products it sold itself.
+        $sql .= " JOIN users u ON s.user_id = u.id WHERE s.user_id = ? AND s.created_at BETWEEN ? AND ?";
+        $params[] = $ownUserId;
+    } elseif ($store_id) {
+        $sql .= " JOIN users u ON s.user_id = u.id WHERE " . saleStoreExpr() . " = ? AND s.created_at BETWEEN ? AND ?";
         $params[] = $store_id;
     } else {
-        $sql .= " JOIN users u ON s.user_id = u.id WHERE " . ownerScopeSql('u', $owner_id) . " AND s.created_at BETWEEN ? AND ?";
+        $sql .= " JOIN users u ON s.user_id = u.id WHERE " . saleOwnerScopeSql($owner_id) . " AND s.created_at BETWEEN ? AND ?";
         $params[] = $owner_id;
         $params[] = $owner_id;
     }
@@ -242,41 +364,132 @@ try {
     $topProducts = $stmt->fetchAll();
 
     // ── Payment method breakdown (This Month) ────────────────────────────────
-    list($sql, $params) = scopeSql("SELECT s.payment_method, COUNT(s.id) as count, COALESCE(SUM(s.total), 0) as total FROM sales s", $store_id, $owner_id);
+    list($sql, $params) = scopeSql("SELECT s.payment_method, COUNT(s.id) as count, COALESCE(SUM(s.total), 0) as total FROM sales s", $store_id, $owner_id, $isSuper, $ownUserId);
     $sql .= " AND s.created_at BETWEEN ? AND ? GROUP BY s.payment_method ORDER BY total DESC";
     $params[] = $monthStart; $params[] = $monthEnd;
     $stmt = $db->prepare($sql); $stmt->execute($params);
     $paymentStats = $stmt->fetchAll();
 
-    // ── Last 30 days sales (chart) ───────────────────────────────────────────
-    list($sql, $params) = scopeSql("SELECT DATE(s.created_at) as sale_date, COALESCE(SUM(s.total), 0) as total, COUNT(*) as count FROM sales s", $store_id, $owner_id);
+    // ── Daily sales, for the Sales — Last 30 Days bars ───────────────────────
+    $chartDays = 30;
+    list($sql, $params) = scopeSql("SELECT DATE(s.created_at) as sale_date, COALESCE(SUM(s.total), 0) as total, COUNT(*) as count FROM sales s", $store_id, $owner_id, $isSuper, $ownUserId);
     $sql .= " AND s.created_at >= ? GROUP BY DATE(s.created_at) ORDER BY sale_date";
-    $params[] = date('Y-m-d 00:00:00', strtotime('-29 days'));
+    $params[] = date('Y-m-d 00:00:00', strtotime('-' . ($chartDays - 1) . ' days'));
     $stmt = $db->prepare($sql); $stmt->execute($params);
     $chartRows = $stmt->fetchAll();
     $chartData = [];
-    for ($i = 29; $i >= 0; $i--) {
+    for ($i = $chartDays - 1; $i >= 0; $i--) {
         $d = date('Y-m-d', strtotime("-$i days"));
         $chartData[$d] = ['total' => 0, 'count' => 0];
     }
     foreach ($chartRows as $row) {
-        $chartData[$row['sale_date']] = ['total' => (float)$row['total'], 'count' => (int)$row['count']];
+        if (isset($chartData[$row['sale_date']])) {
+            $chartData[$row['sale_date']] = ['total' => (float)$row['total'], 'count' => (int)$row['count']];
+        }
+    }
+
+    // ── Last 7 days ──────────────────────────────────────────────────────────
+    $weekStart = date('Y-m-d 00:00:00', strtotime('-6 days'));
+
+    // There is no SMS credit to show - sending is unmetered now - so the card
+    // counts what actually left the shop, straight out of the same log the SMS
+    // Service page reads.
+    smsUsageEnsureTables($db);
+    $smsUsage = smsUsageStats($db, $owner_id);
+
+    // ── Online shop ──────────────────────────────────────────────────────────
+    // An order that was rejected or cancelled never became money, so the card
+    // counts what the shop actually took. ecom_orders is created on first use by
+    // config/ecommerce.php, so an install that never opened the Online Shop page
+    // has no table at all - hence the guard, and the card simply not appearing.
+    $ecomWeekTotal = null;
+    if (hasPermission('ecommerce')) {
+        try {
+            $stmt = $db->prepare("SELECT COALESCE(SUM(total), 0) FROM ecom_orders
+                WHERE owner_id = ? AND status NOT IN ('cancelled', 'rejected')
+                AND created_at BETWEEN ? AND ?");
+            $stmt->execute([$owner_id, $weekStart, $todayEnd]);
+            $ecomWeekTotal = (float)$stmt->fetchColumn();
+        } catch (Throwable $e) {
+            $ecomWeekTotal = null;
+        }
     }
 
     // ── Cashbook summary ─────────────────────────────────────────────────────
-    $stmt = $db->prepare("SELECT COALESCE(SUM(CASE WHEN type='cash_out' THEN amount ELSE 0 END), 0) as cash_out
-        FROM cashbook_entries ce WHERE ce.owner_id = ?");
-    $stmt->execute([$owner_id]);
+    // A counter account reads its own movements only, like every other figure on
+    // this page: another staff member's expenses are not theirs to see.
+    $cashTotalsSql = "SELECT COALESCE(SUM(CASE WHEN type='cash_out' THEN amount ELSE 0 END), 0) as cash_out
+        FROM cashbook_entries ce WHERE ce.owner_id = ?";
+    $cashTotalsParams = [$owner_id];
+    if ($ownUserId) {
+        $cashTotalsSql .= " AND ce.user_id = ?";
+        $cashTotalsParams[] = (int)$ownUserId;
+    }
+    $stmt = $db->prepare($cashTotalsSql);
+    $stmt->execute($cashTotalsParams);
     $cashTotals = $stmt->fetch();
 
+    // Today's cash out, for the Expenses card. A counter account (staff/cashier)
+    // reads its own movements only, like every other card this page shows it.
+    $cashOwn = '';
+    $cashTodayParams = [$owner_id, $todayStart, $todayEnd];
+    if ($ownUserId) {
+        $cashOwn = " AND ce.user_id = ?";
+        array_splice($cashTodayParams, 1, 0, [(int)$ownUserId]);
+    }
     $stmt = $db->prepare("SELECT COALESCE(SUM(CASE WHEN type='cash_out' THEN amount ELSE 0 END), 0) as cash_out
-        FROM cashbook_entries ce WHERE ce.owner_id = ? AND ce.created_at BETWEEN ? AND ?");
-    $stmt->execute([$owner_id, $todayStart, $todayEnd]);
+        FROM cashbook_entries ce WHERE ce.owner_id = ?" . $cashOwn . " AND ce.created_at BETWEEN ? AND ?");
+    $stmt->execute($cashTodayParams);
     $cashToday = $stmt->fetch();
 
+    // Today's expenses, for the Net Balance card. Two kinds of cash_out line are
+    // not a cost of the day and stay out of that sum:
+    //   * source_type = 'return' - a refund is already off the sale it came from,
+    //     inside today's net sale, so subtracting it here takes the money twice;
+    //   * source_type = 'transfer' - moving cash between the shop's own books is
+    //     not spending, and its matching cash_in is not on this side either.
+    // An install without the source_type column has held neither kind of line, so
+    // it reads cash_out as it always did.
+    $expenseSql = "SELECT COALESCE(SUM(ce.amount), 0)
+        FROM cashbook_entries ce WHERE ce.owner_id = ? AND ce.type = 'cash_out'";
+    $expenseParams = [$owner_id];
+    if ($ownUserId) {
+        $expenseSql .= " AND ce.user_id = ?";
+        $expenseParams[] = (int)$ownUserId;
+    }
+    if (cashbookHasSourceType()) {
+        $expenseSql .= " AND (ce.source_type IS NULL OR ce.source_type NOT IN ('return', 'transfer'))";
+    }
+    $expenseSql .= " AND ce.created_at BETWEEN ? AND ?";
+    $expenseParams[] = $todayStart;
+    $expenseParams[] = $todayEnd;
+    $stmt = $db->prepare($expenseSql);
+    $stmt->execute($expenseParams);
+    $expenseToday = (float)$stmt->fetchColumn();
+
+    // ── Returns and exchanges ────────────────────────────────────────────────
+    // An exchange settles the difference between what the customer handed back and
+    // what they took. Collected is money in, refunded is money out, and both are
+    // stored on the return row itself rather than inferred from the product names.
+    $today = date('Y-m-d');
+    $returnsToday = returnCashSummary($owner_id, $today, $today, $store_id, $ownUserId ?: null);
+
+    // Net Balance = today's net sale minus today's expenses. The sale side folds
+    // returns the way the rest of the page does: a plain refund is already off the
+    // sale it came from, and an exchange adds the extra it collected while taking
+    // back what it refunded. Nothing is counted twice on either side.
+    $netToday = round((float)$todaySales['total'] + (float)$returnsToday['net_effect'] - $expenseToday, 2);
+
     // ── Recent cashbook entries ──────────────────────────────────────────────
-    $stmt = $db->prepare("SELECT ce.*, u.name as user_name FROM cashbook_entries ce LEFT JOIN users u ON ce.user_id = u.id WHERE ce.owner_id = ? ORDER BY ce.created_at DESC, ce.id DESC LIMIT 6");
-    $stmt->execute([$owner_id]);
+    $recentCashSql = "SELECT ce.*, u.name as user_name FROM cashbook_entries ce LEFT JOIN users u ON ce.user_id = u.id WHERE ce.owner_id = ?";
+    $recentCashParams = [$owner_id];
+    if ($ownUserId) {
+        $recentCashSql .= " AND ce.user_id = ?";
+        $recentCashParams[] = (int)$ownUserId;
+    }
+    $recentCashSql .= " ORDER BY ce.created_at DESC, ce.id DESC LIMIT 6";
+    $stmt = $db->prepare($recentCashSql);
+    $stmt->execute($recentCashParams);
     $recentCash = $stmt->fetchAll();
 
     // ── Staff salary overview ────────────────────────────────────────────────
@@ -312,261 +525,334 @@ try {
     }
     $salaryBalance = max(0, $salaryTotals['total_salary'] - $salaryTotals['paid_period']);
 
-    $netCash = $allTimeSales['total'] - $cashTotals['cash_out'];
+    // What the drawer holds, straight from the ledger: every movement that touches
+    // cash is a line here - a sale's collection, an exchange extra, an expense, a
+    // refund - so cash in minus cash out is the whole story with nothing doubled.
+    //
+    // It used to be "Sales - Expenses + exchange collected", which counted a refund
+    // twice: the returned amount comes off the sale it came from AND stands as a
+    // cash_out row. Same reader the refund guard uses, so the card and the guard
+    // agree on what the till can pay out.
+    //
+    // A counter account gets the same arithmetic over its own ledger lines only.
+    // cashLedgerState() answers for the whole shop, and the drawer's total is
+    // not the counter person's figure to read.
+    if ($ownUserId) {
+        $stmt = $db->prepare("SELECT COALESCE(SUM(CASE WHEN type='cash_in' THEN amount ELSE -amount END), 0)
+            FROM cashbook_entries WHERE owner_id = ? AND user_id = ?");
+        $stmt->execute([$owner_id, (int)$ownUserId]);
+        $netCash = (float)$stmt->fetchColumn();
+    } else {
+        $netCash = cashLedgerState($owner_id)['balance'];
+    }
 
 } catch (PDOException $e) {
     $error = 'Error loading dashboard data: ' . $e->getMessage();
 }
 
-// Comparisons
+// The bar panel below reads $chartData, which is only filled once the queries
+// have run; a PDOException part-way through leaves it unset.
+$chartData = $chartData ?? [];
+
+// ── Sales — Last 30 Days (bars) ──────────────────────────────────────────────
+// A row of bars answers "which days were good and which were flat", and it only
+// reads as a row with a full month of them. It is drawn from the $chartData the
+// daily-sales query already loaded, so the panel costs no extra query.
+$barDays = array_slice($chartData, -30, null, true);
+$barMax = $barDays ? (float)max(array_column($barDays, 'total')) : 0;
+if ($barMax <= 0) { $barMax = 1; }
+$barTotal = array_sum(array_column($barDays, 'total'));
+$barToday = date('Y-m-d');
+
+/**
+ * A money amount short enough to sit above a 20px bar: 15600 -> "15.6k".
+ * Only this chart needs it, which is why it lives here and not in db.php.
+ */
+function compactMoney($v)
+{
+    $v = (float)$v;
+    if ($v >= 1000000) { return number_format($v / 1000000, 1) . 'm'; }
+    if ($v >= 1000) { return number_format($v / 1000, 1) . 'k'; }
+    return number_format($v);
+}
+
+// The hero names the shop rather than saying "single store view" twice over.
+$storeName = '';
+if ($store_id) {
+    $stmt = $db->prepare("SELECT name FROM stores WHERE id = ?");
+    $stmt->execute([$store_id]);
+    $storeName = (string)$stmt->fetchColumn();
+}
+
 $todayTotal = (float)$todaySales['total'];
-$todayDiff = $yesterdayTotal > 0 ? round(($todayTotal - $yesterdayTotal) / $yesterdayTotal * 100) : 0;
+
+/**
+ * One KPI card: icon, label, amount.
+ *
+ * 'value' arrives already formatted by the caller, and 'style' is the page's own
+ * colour coding (Expenses red, Salary violet), never user data.
+ *
+ * 'href' turns the card into a button that opens that page. It is a real <a>
+ * rather than a click handler so a tap, a keyboard and the app's WebView all
+ * behave the same.
+ */
+function kpiCard($c)
+{
+    $link = !empty($c['href']);
+    $tag = $link ? 'a' : 'div';
+    $html = '<' . $tag . ' class="kpi-card"' . ($link ? ' href="' . $c['href'] . '"' : '') . '>';
+    $html .= '<span class="kpi-ico ' . $c['tone'] . '"><i class="fas ' . $c['icon'] . '"></i></span>';
+    $html .= '<div class="kpi-label">' . $c['label'] . '</div>';
+    $html .= '<div class="kpi-value"'
+        . (empty($c['style']) ? '' : ' style="' . $c['style'] . '"') . '>' . $c['value'] . '</div>';
+    $html .= '</' . $tag . '>';
+    return $html;
+}
+
+// Card defaults, so a card still renders if the data block above bailed out.
+$monthlySales = $monthlySales ?? ['total' => 0];
+$yearTotal = $yearTotal ?? 0;
+
+// Payment method colours, shared by the donut and the transaction list.
+$payColors = [
+    'cash'   => ['#10b981', '#ecfdf5'],
+    'bkash'  => ['#ec4899', '#fdf2f8'],
+    'nagad'  => ['#f59e0b', '#fffbeb'],
+    'rocket' => ['#8b5cf6', '#f5f3ff'],
+    'card'   => ['#3b82f6', '#eff6ff'],
+    'bank'   => ['#0ea5e9', '#ecfeff'],
+    'lottery' => ['#ca8a04', '#fefce8'],
+];
 
 include 'includes/header.php';
 ?>
 
 <style>
+    /* ── Hero ─────────────────────────────────────────────────────────────── */
     .dash-hero {
         position: relative;
-        border-radius: 1.25rem;
-        padding: 2rem 2.25rem;
-        margin-bottom: 1.75rem;
-        background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        border-radius: 20px;
+        padding: 1.7rem 2rem;
+        margin-bottom: 1.5rem;
+        background: linear-gradient(105deg, #0ea5e9 0%, #2563eb 38%, #4338ca 72%, #6d28d9 100%);
         color: #fff;
         overflow: hidden;
-        box-shadow: 0 20px 40px -12px rgba(15, 23, 42, 0.55);
+        box-shadow: 0 16px 34px rgba(37, 99, 235, .26);
     }
-    .dash-hero::before {
-        content: '';
-        position: absolute;
-        top: -90px; right: -70px;
-        width: 300px; height: 300px;
-        border-radius: 50%;
-        background: radial-gradient(circle, rgba(59,130,246,0.35) 0%, transparent 70%);
+    .dash-hero::before, .dash-hero::after {
+        content: ''; position: absolute; border-radius: 50%; pointer-events: none;
+        background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.22), rgba(255,255,255,0) 70%);
     }
-    .dash-hero::after {
-        content: '';
-        position: absolute;
-        bottom: -120px; left: -60px;
-        width: 260px; height: 260px;
-        border-radius: 50%;
-        background: radial-gradient(circle, rgba(16,185,129,0.3) 0%, transparent 70%);
+    .dash-hero::before { width: 320px; height: 320px; right: 26%; top: -180px; }
+    .dash-hero::after { width: 280px; height: 280px; right: -70px; bottom: -160px; }
+    .dash-hero-copy { flex: 1 1 300px; min-width: 0; position: relative; z-index: 1; }
+    .hero-chip {
+        display: inline-flex; align-items: center; gap: .4rem;
+        background: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.30);
+        color: #fff; border-radius: 999px; padding: .28rem .85rem;
+        font-size: .76rem; font-weight: 700;
     }
-    .dash-hero-top {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-        position: relative;
-        z-index: 1;
-        flex-wrap: wrap;
+    .dash-hero-title { margin-top: .65rem; font-size: 1.85rem; font-weight: 800; color: #fff; line-height: 1.15; }
+    .dash-hero-sub { font-size: .88rem; color: rgba(255,255,255,.84); margin-top: .35rem; }
+    .hero-meta { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-top: 1rem; }
+    .hm {
+        display: inline-flex; align-items: center; gap: .4rem;
+        background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.22);
+        border-radius: 999px; padding: .26rem .7rem;
+        font-size: .74rem; font-weight: 600; color: #fff;
     }
-    .dash-hero-title {
-        font-size: 1.5rem;
-        font-weight: 800;
+    .hm i { color: #dbeafe; }
+    .hm b { font-weight: 800; }
+    .dash-hero-quote {
+        font-style: italic; font-weight: 700; color: #fff; font-size: 1.02rem;
+        max-width: 200px; line-height: 1.45; text-align: right;
+        position: relative; z-index: 1; margin-left: auto;
     }
-    .dash-hero-sub {
-        font-size: 0.85rem;
-        opacity: 0.75;
-        margin-top: 0.2rem;
-    }
-    .dash-hero-date {
-        margin-left: auto;
-        background: rgba(255,255,255,0.14);
-        padding: 0.45rem 1.1rem;
-        border-radius: 999px;
-        font-size: 0.8rem;
-        font-weight: 600;
-        position: relative;
-        z-index: 1;
-    }
-    .dash-hero-bottom {
-        margin-top: 1.5rem;
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 1rem;
-        position: relative;
-        z-index: 1;
-    }
-    .hero-kpi {
-        background: rgba(255,255,255,0.1);
-        border: 1px solid rgba(255,255,255,0.16);
-        border-radius: 1rem;
-        padding: 1.1rem 1.25rem;
-        backdrop-filter: blur(4px);
-    }
-    .hero-kpi-label {
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        opacity: 0.75;
-        margin-bottom: 0.3rem;
-    }
-    .hero-kpi-value {
-        font-size: 1.4rem;
-        font-weight: 800;
-    }
-    .hero-kpi-sub {
-        font-size: 0.75rem;
-        opacity: 0.85;
-        margin-top: 0.15rem;
-    }
-    .hero-kpi-sub .up { color: #34d399; font-weight: 700; }
-    .hero-kpi-sub .down { color: #f87171; font-weight: 700; }
+    .dash-hero-quote span { display: block; font-style: normal; font-weight: 600; color: rgba(255,255,255,.66); font-size: .74rem; margin-top: .35rem; }
+    .dash-hero-art { width: 168px; flex-shrink: 0; position: relative; z-index: 1; }
+    html[data-theme="dark"] .dash-hero { box-shadow: 0 16px 34px rgba(0, 0, 0, .45); }
+    @media screen and (max-width: 768px) { .dash-hero { display: none; } }
 
-    .m-stats {
+    /* ── KPI cards ────────────────────────────────────────────────────────── */
+    .kpi-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 1.25rem;
-        margin-bottom: 1.75rem;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: .8rem;
+        margin-bottom: 1.25rem;
     }
-    .m-stat {
-        background: #fff;
-        border-radius: 1.1rem;
-        padding: 1.4rem;
-        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
-        border: 1px solid #eef0f4;
-        display: flex;
-        align-items: flex-start;
-        gap: 1rem;
+    .kpi-card {
+        position: relative;
+        display: flex; flex-direction: column;
+        background: var(--surface);
+        border: 1px solid var(--gray-200);
+        border-radius: 14px;
+        padding: .8rem .9rem;
+        overflow: hidden;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, .05);
         transition: transform .18s ease, box-shadow .18s ease;
     }
-    .m-stat:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.1);
+    .kpi-card:hover { transform: translateY(-3px); box-shadow: 0 14px 30px rgba(15, 23, 42, .1); }
+    /* A card with a destination is an <a>: it must not pick up the global link
+       colour or underline, and the chevron is what tells it apart from a card
+       that only displays a number. */
+    a.kpi-card { color: inherit; text-decoration: none; }
+    a.kpi-card::after {
+        content: '\203A';
+        position: absolute; top: .45rem; right: .6rem;
+        font-size: 1.05rem; font-weight: 800; line-height: 1;
+        color: var(--gray-300);
     }
-    .m-icon {
-        width: 52px; height: 52px;
-        border-radius: 14px;
-        display: flex; align-items: center; justify-content: center;
-        font-size: 1.35rem;
-        flex-shrink: 0;
+    a.kpi-card:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+    .kpi-label { font-size: .72rem; font-weight: 700; color: var(--gray-500); margin-top: .5rem; }
+    .kpi-value { font-size: 1.22rem; font-weight: 800; color: var(--gray-900); line-height: 1.2; margin-top: .05rem; }
+    .kpi-ico {
+        width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center; font-size: .88rem; color: #fff;
     }
-    .m-icon.green  { background: #ecfdf5; color: #059669; }
-    .m-icon.blue   { background: #eff6ff; color: #2563eb; }
-    .m-icon.indigo { background: #eef2ff; color: #4f46e5; }
-    .m-icon.amber  { background: #fffbeb; color: #d97706; }
-    .m-icon.rose   { background: #fef2f2; color: #dc2626; }
-    .m-icon.gold   { background: #fefce8; color: #b45309; }
-    .m-icon.violet { background: #f5f3ff; color: #7c3aed; }
-    .m-icon.cyan   { background: #ecfeff; color: #0891b2; }
-    .m-label {
-        font-size: 0.82rem;
-        color: #64748b;
-        font-weight: 600;
-        margin-bottom: 0.3rem;
-    }
-    .m-value {
-        font-size: 1.45rem;
-        font-weight: 800;
-        color: #0f172a;
-        line-height: 1.15;
-    }
-    .m-sub {
-        font-size: 0.75rem;
-        color: #94a3b8;
-        margin-top: 0.25rem;
-    }
+    .kpi-ico.blue   { background: linear-gradient(135deg, #3b82f6, #1d4ed8); }
+    .kpi-ico.green  { background: linear-gradient(135deg, #10b981, #047857); }
+    .kpi-ico.violet { background: linear-gradient(135deg, #8b5cf6, #6d28d9); }
+    .kpi-ico.amber  { background: linear-gradient(135deg, #f59e0b, #d97706); }
+    .kpi-ico.rose   { background: linear-gradient(135deg, #ec4899, #be185d); }
+    .kpi-ico.cyan   { background: linear-gradient(135deg, #06b6d4, #0e7490); }
+    .kpi-ico.sky    { background: linear-gradient(135deg, #0ea5e9, #0369a1); }
+    .kpi-ico.indigo { background: linear-gradient(135deg, #6366f1, #4338ca); }
+    .kpi-ico.teal   { background: linear-gradient(135deg, #14b8a6, #0d9488); }
+    .kpi-ico.gold   { background: linear-gradient(135deg, #eab308, #b45309); }
+    .kpi-ico.red    { background: linear-gradient(135deg, #ef4444, #b91c1c); }
 
-    .grid-2col { display: grid; grid-template-columns: 1.6fr 1fr; gap: 1.25rem; margin-bottom: 1.75rem; }
-    .grid-2col-eq { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-bottom: 1.75rem; }
+    /* ── Layout rows ──────────────────────────────────────────────────────── */
+    .grid-2col { display: grid; grid-template-columns: 1.6fr 1fr; gap: 1.25rem; margin-bottom: 1.5rem; }
+    .grid-2col-eq { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-bottom: 1.5rem; }
+    /* For a row whose panels are permission-gated: auto-fit collapses the empty
+       track, so the one panel that rendered takes the full width. */
+    .grid-adaptive { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
     @media (max-width: 900px) {
         .grid-2col, .grid-2col-eq { grid-template-columns: 1fr; }
+        .dash-hero-art { display: none; }
+        .dash-hero-quote { margin-left: 0; text-align: left; }
     }
+    .stack { display: flex; flex-direction: column; gap: 1.25rem; }
+    .stack > .panel { margin-bottom: 0; }
 
     .panel {
-        background: #fff;
-        border-radius: 1.1rem;
-        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
-        border: 1px solid #eef0f4;
+        background: var(--surface);
+        border-radius: 16px;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, .05);
+        border: 1px solid var(--gray-200);
         overflow: hidden;
+        margin-bottom: 1.5rem;
     }
     .panel-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 1.1rem 1.5rem;
-        border-bottom: 1px solid #f1f5f9;
+        display: flex; align-items: center; justify-content: space-between;
+        gap: .75rem; flex-wrap: wrap;
+        padding: 1rem 1.35rem;
+        border-bottom: 1px solid var(--gray-100);
     }
-    .panel-head h3 {
-        margin: 0;
-        font-size: 1rem;
-        font-weight: 800;
-        color: #0f172a;
-    }
-    .panel-body { padding: 1.5rem; }
+    .panel-head h3 { margin: 0; font-size: .98rem; font-weight: 800; color: var(--gray-900); }
+    .panel-body { padding: 1.35rem; }
     .panel-body.no-pad { padding: 0; }
+    .panel-link { font-size: .78rem; font-weight: 700; color: #2563eb; text-decoration: none; }
+    .panel-link:hover { text-decoration: underline; }
 
-    /* Chart */
-    .chart-bars {
-        display: flex;
-        align-items: flex-end;
-        gap: 6px;
-        height: 160px;
-        margin-top: 1rem;
+    /* ── Clickable panels ─────────────────────────────────────────────────── */
+    /* The whole card opens the page its header link points at: that link carries
+       a stretched ::after over the panel, so it works with a mouse, a tap and
+       the keyboard, and needs no JS. Links in the body are raised above the
+       overlay so they keep their own target - "Create a store" must not become
+       a second route to stores.php's list. */
+    .panel-click {
+        position: relative; cursor: pointer;
+        transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
     }
-    .chart-col {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 6px;
-        height: 100%;
-        justify-content: flex-end;
-        min-width: 0;
+    .panel-click:hover, .panel-click:focus-within {
+        transform: translateY(-2px);
+        box-shadow: 0 14px 30px rgba(15, 23, 42, .1);
+        border-color: #93c5fd;
     }
-    .chart-bar {
-        width: 100%;
-        border-radius: 6px 6px 2px 2px;
-        background: linear-gradient(180deg, #4f46e5, #818cf8);
-        min-height: 3px;
-        transition: height .5s ease;
+    .panel-click .panel-link::after {
+        content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
     }
-    .chart-col:hover .chart-bar { background: linear-gradient(180deg, #0f172a, #334155); }
-    .chart-col.today .chart-bar { background: linear-gradient(180deg, #10b981, #34d399); }
-    .chart-val { font-size: 0.62rem; font-weight: 700; color: #64748b; }
-    .chart-label { font-size: 0.66rem; color: #94a3b8; }
+    .panel-click .panel-link:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; border-radius: 6px; }
+    .panel-click .panel-body a { position: relative; z-index: 1; }
+    html[data-theme="dark"] .panel-click:hover, html[data-theme="dark"] .panel-click:focus-within { border-color: #2b457a; }
+    .ph-ico {
+        width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+        display: inline-flex; align-items: center; justify-content: center; font-size: .9rem;
+    }
+    .panel-head h3 { display: flex; align-items: center; gap: .6rem; }
+    .panel-head h3 i { margin: 0; }
 
-    /* Payment method pills */
-    .pay-stat {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        padding: 0.6rem 0;
-        border-bottom: 1px solid #f1f5f9;
+    /* ── Daily bars (Sales — Last 30 Days) ────────────────────────────────── */
+    /* HTML flex rather than SVG: thirty bars have to survive being a third of
+       the width they were designed at, and a viewBox stretched with
+       preserveAspectRatio="none" would squash the value labels. The scale tops
+       out at 84% of the track so the tallest bar still leaves room for its own
+       number above it. */
+    .bars { display: flex; align-items: flex-end; gap: 5px; }
+    .bar-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+    .bar-track { height: 160px; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
+    .bar-val { font-size: .62rem; font-weight: 800; color: var(--gray-600); white-space: nowrap; margin-bottom: 4px; }
+    .bar-val:empty { display: none; }
+    .bar-fill { width: 100%; max-width: 26px; min-width: 5px; border-radius: 8px 8px 3px 3px; background: linear-gradient(180deg, #6366f1, #3b82f6); }
+    /* Today is a partial day. Drawing it in the same colour as a finished one
+       invites the question "why did sales collapse at 4pm". */
+    .bar-col.today .bar-fill { background: linear-gradient(180deg, #34d399, #059669); }
+    .bar-col.today .bar-val { color: #059669; }
+    .bar-day { margin-top: .45rem; text-align: center; font-size: .62rem; font-weight: 700; color: var(--gray-400); }
+    .bar-empty { padding: 1rem .2rem; text-align: center; font-size: .8rem; font-weight: 700; color: var(--gray-400); }
+    @media screen and (max-width: 768px) {
+        .bars { gap: 2px; }
+        .bar-track { height: 120px; }
+        /* Thirty numbers cannot be read across a phone screen; the bars carry
+           the shape and every fifth day carries the scale. */
+        .bar-val { display: none; }
+        .bar-col:not(:nth-child(5n)) .bar-day { visibility: hidden; }
+        .bar-fill { border-radius: 4px 4px 2px 2px; }
     }
-    .pay-stat:last-child { border-bottom: none; }
-    .pay-icon {
-        width: 40px; height: 40px;
-        border-radius: 12px;
-        display: flex; align-items: center; justify-content: center;
-        font-size: 1rem;
-        flex-shrink: 0;
+
+    /* ── Donut ────────────────────────────────────────────────────────────── */
+    .donut-wrap { display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap; }
+    .donut { width: 150px; height: 150px; flex-shrink: 0; }
+    .donut circle { fill: none; stroke-width: 18; }
+    .donut-center-value { font-size: 15px; font-weight: 800; fill: var(--gray-900); }
+    .donut-center-label { font-size: 8px; fill: var(--gray-400); letter-spacing: .04em; }
+    .pay-legend { flex: 1 1 150px; min-width: 0; }
+    .pay-legend-row { display: flex; align-items: center; gap: .55rem; padding: .38rem 0; font-size: .8rem; }
+    .pay-legend-row .swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+    .pay-legend-row .pl-name { font-weight: 700; color: var(--gray-700); text-transform: capitalize; }
+    .pay-legend-row .pl-amt { margin-left: auto; font-weight: 700; color: var(--gray-900); white-space: nowrap; }
+    .pay-legend-row .pl-pct { width: 42px; text-align: right; color: var(--gray-400); font-size: .74rem; font-weight: 700; }
+
+    /* ── Page footer band ─────────────────────────────────────────────────── */
+    .page-foot {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: .75rem; flex-wrap: wrap;
+        padding: 1rem .25rem 0; margin-top: .25rem;
+        border-top: 1px solid var(--gray-200);
+        font-size: .76rem; color: var(--gray-500);
     }
-    .pay-bar { flex: 1; }
-    .pay-bar-track {
-        height: 8px;
-        border-radius: 999px;
-        background: #f1f5f9;
-        overflow: hidden;
-        margin-top: 4px;
-    }
+    .page-foot .pf-brand { font-weight: 800; color: var(--gray-800); }
+    .page-foot .pf-sep { margin: 0 .5rem; color: var(--gray-300); }
+
+    /* ── Shared bits kept by the store / cashbook / staff panels ──────────── */
+    .pay-bar-track { height: 8px; border-radius: 999px; background: var(--gray-100); overflow: hidden; margin-top: 4px; }
     .pay-bar-fill { height: 100%; border-radius: 999px; }
-
     .list-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 0.75rem;
-        padding: 0.6rem 0;
-        border-bottom: 1px solid #f1f5f9;
+        display: flex; justify-content: space-between; align-items: center;
+        gap: .75rem; padding: .6rem 0; border-bottom: 1px solid var(--gray-100);
     }
     .list-row:last-child { border-bottom: none; }
-    .list-row .lr-main { display: flex; align-items: center; gap: 0.7rem; min-width: 0; }
+    .lr-main { display: flex; align-items: center; gap: .7rem; min-width: 0; }
     .list-row .lr-amt { font-weight: 700; white-space: nowrap; }
-
-    .mini-num { font-size: 0.75rem; color: #94a3b8; }
-
-    .badge-pay { font-size: 0.72rem; padding: 0.25rem 0.6rem; border-radius: 999px; font-weight: 700; }
+    .mini-num { font-size: .74rem; color: var(--gray-400); }
+    .badge-pay { font-size: .72rem; padding: .25rem .6rem; border-radius: 999px; font-weight: 700; }
+    .cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: .7rem; }
+    @media (max-width: 520px) { .cols-3 { grid-template-columns: 1fr; } }
 </style>
 
 <!-- Flash Message -->
@@ -587,209 +873,58 @@ include 'includes/header.php';
 <?php endif; ?>
 
 <!-- Hero -->
+<?php
+$hour = (int)date('G');
+$greeting = $hour < 12 ? 'Good morning' : ($hour < 17 ? 'Good afternoon' : 'Good evening');
+$firstName = sanitize(explode(' ', trim($user['name']))[0]);
+?>
 <div class="dash-hero">
-    <div class="dash-hero-top">
-        <div>
-            <div class="dash-hero-title">
-                <?php echo $store_id ? 'Store Dashboard' : 'Business Overview'; ?>
-            </div>
-            <div class="dash-hero-sub">
+    <div class="dash-hero-copy">
+        <span class="hero-chip">Welcome Back, <?php echo $firstName; ?> <i class="fas fa-hand-paper"></i></span>
+        <div class="dash-hero-title"><?php echo ucfirst($greeting); ?>, <?php echo $firstName; ?>!</div>
+        <div class="dash-hero-sub">Here's what's happening with your business today.</div>
+        <div class="hero-meta">
+            <span class="hm">
                 <i class="fas fa-store"></i>
-                <?php echo $store_id ? 'Viewing a single store' : 'Viewing all your stores'; ?>
-                &nbsp;&middot;&nbsp; Welcome back, <?php echo sanitize($user['name']); ?>
-            </div>
-        </div>
-        <span class="dash-hero-date">
-            <i class="far fa-calendar-alt"></i> <?php echo date('l, d M Y'); ?>
-        </span>
-    </div>
-    <div class="dash-hero-bottom">
-        <div class="hero-kpi">
-            <div class="hero-kpi-label"><i class="fas fa-shopping-bag"></i> Today's Sales</div>
-            <div class="hero-kpi-value" style="color:#4ade80;"><?php echo formatCurrency($todaySales['total']); ?></div>
-            <div class="hero-kpi-sub">
-                <?php if ($todayDiff >= 0): ?>
-                    <span class="up"><i class="fas fa-arrow-up"></i> <?php echo $todayDiff; ?>%</span> vs yesterday
-                <?php else: ?>
-                    <span class="down"><i class="fas fa-arrow-down"></i> <?php echo abs($todayDiff); ?>%</span> vs yesterday
-                <?php endif; ?>
-                &middot; <?php echo $todaySales['count']; ?> transactions
-            </div>
-        </div>
-        <div class="hero-kpi">
-            <div class="hero-kpi-label"><i class="fas fa-chart-line"></i> Monthly Sales</div>
-            <div class="hero-kpi-value"><?php echo formatCurrency($monthlySales['total']); ?></div>
-            <div class="hero-kpi-sub"><?php echo date('F Y'); ?> &middot; <?php echo $monthlySales['count']; ?> transactions</div>
-        </div>
-        <div class="hero-kpi">
-            <div class="hero-kpi-label"><i class="fas fa-history"></i> All-Time Sales</div>
-            <div class="hero-kpi-value"><?php echo formatCurrency($allTimeSales['total']); ?></div>
-            <div class="hero-kpi-sub"><?php echo $allTimeSales['count']; ?> total transactions</div>
-        </div>
-        <div class="hero-kpi">
-            <div class="hero-kpi-label"><i class="fas fa-hand-holding-usd"></i> Net (Sales - Expenses)</div>
-            <div class="hero-kpi-value" style="<?php echo $netCash < 0 ? 'color:#f87171;' : ''; ?>"><?php echo formatCurrency($netCash); ?></div>
-            <div class="hero-kpi-sub">All-time sales minus expenses</div>
+                <?php echo $store_id ? ($storeName !== '' ? sanitize($storeName) : 'Your store') : 'All of your stores'; ?>
+            </span>
+            <span class="hm"><i class="fas fa-calendar-day"></i> <?php echo date('l, d M Y'); ?></span>
+            <span class="hm">
+                <i class="fas fa-cash-register"></i>
+                <b><?php echo formatCurrency($todayTotal); ?></b> &middot; <?php echo (int)$todaySales['count']; ?> sales today
+            </span>
         </div>
     </div>
-</div>
-
-<!-- KPI Cards -->
-<div class="m-stats">
-    <div class="m-stat">
-        <div class="m-icon green"><i class="fas fa-money-bill-wave"></i></div>
-        <div>
-            <div class="m-label">Today's Sales</div>
-            <div class="m-value" style="color:#059669;"><?php echo formatCurrency($todaySales['total']); ?></div>
-            <div class="m-sub"><?php echo $todaySales['count']; ?> transactions</div>
-        </div>
-    </div>
-    <div class="m-stat">
-        <div class="m-icon indigo"><i class="fas fa-chart-line"></i></div>
-        <div>
-            <div class="m-label">Monthly Sales</div>
-            <div class="m-value" style="color:#111827;"><?php echo formatCurrency($monthlySales['total']); ?></div>
-            <div class="m-sub"><?php echo $monthlySales['count']; ?> transactions this month</div>
-        </div>
-    </div>
-    <div class="m-stat">
-        <div class="m-icon red"><i class="fas fa-arrow-up"></i></div>
-        <div>
-            <div class="m-label">Expenses</div>
-            <div class="m-value" style="color:#dc2626;"><?php echo formatCurrency($cashToday['cash_out']); ?></div>
-            <div class="m-sub"><?php echo formatCurrency($cashTotals['cash_out']); ?> total</div>
-        </div>
-    </div>
-    <div class="m-stat">
-        <div class="m-icon <?php echo $netCash >= 0 ? 'green' : 'red'; ?>"><i class="fas fa-hand-holding-usd"></i></div>
-        <div>
-            <div class="m-label">Net Balance</div>
-            <div class="m-value" style="color:<?php echo $netCash >= 0 ? '' : '#dc2626'; ?>;"><?php echo formatCurrency($netCash); ?></div>
-            <div class="m-sub">Sales - Expenses</div>
-        </div>
-    </div>
-    <div class="m-stat">
-        <div class="m-icon gold"><i class="fas fa-coins"></i></div>
-        <div>
-            <div class="m-label">Commission</div>
-            <div class="m-value" style="color:#b45309;"><?php echo formatCurrency($commissionToday); ?></div>
-            <div class="m-sub">৳5/pcs · <?php echo formatCurrency($commissionAllTime); ?> total</div>
-        </div>
-    </div>
-    <div class="m-stat">
-        <div class="m-icon blue"><i class="fas fa-box"></i></div>
-        <div>
-            <div class="m-label">Active Products</div>
-            <div class="m-value"><?php echo $totalProducts; ?></div>
-            <div class="m-sub"><?php echo $totalCategories; ?> categories</div>
-        </div>
-    </div>
-    
-    <div class="m-stat">
-        <div class="m-icon cyan"><i class="fas fa-users"></i></div>
-        <div>
-            <div class="m-label">Customers</div>
-            <div class="m-value"><?php echo $totalCustomers; ?></div>
-            <div class="m-sub"><?php echo $totalStores; ?> active stores</div>
-        </div>
-    </div>
-    <div class="m-stat">
-        <div class="m-icon amber"><i class="fas fa-user-tie"></i></div>
-        <div>
-            <div class="m-label">Staff Members</div>
-            <div class="m-value"><?php echo $totalStaff; ?></div>
-            <div class="m-sub">Active staff</div>
-        </div>
-    </div>
-    <div class="m-stat">
-        <div class="m-icon violet"><i class="fas fa-wallet"></i></div>
-        <div>
-            <div class="m-label">Salary Balance</div>
-            <div class="m-value" style="color:#7c3aed;"><?php echo formatCurrency($salaryBalance); ?></div>
-            <div class="m-sub"><?php echo formatCurrency($salaryTotals['paid_period']); ?> paid this month</div>
-        </div>
-    </div>
-    <div class="m-stat">
-        <div class="m-icon rose"><i class="fas fa-exclamation-triangle"></i></div>
-        <div>
-            <div class="m-label">Low Stock Alerts</div>
-            <div class="m-value"><?php echo $lowStockCount; ?></div>
-            <div class="m-sub">Products need restock</div>
-        </div>
-    </div>
-</div>
-
-<!-- Sales chart + Payment methods -->
-<div class="grid-2col">
-    <div class="panel">
-        <div class="panel-head">
-            <h3><i class="fas fa-chart-area" style="color:#4f46e5; margin-right:0.5rem;"></i>Sales — Last 30 Days</h3>
-            <span class="badge badge-primary"><?php echo formatCurrency(array_sum(array_column($chartData, 'total'))); ?></span>
-        </div>
-        <div class="panel-body">
-            <?php
-            $chartMax = max(array_column($chartData, 'total')) ?: 1;
-            $todayD = date('Y-m-d');
-            ?>
-            <div class="chart-bars">
-                <?php foreach ($chartData as $d => $cd): ?>
-                    <?php
-                    $h = max(3, round(((float)$cd['total'] / $chartMax) * 100));
-                    $label = date('d', strtotime($d));
-                    ?>
-                    <div class="chart-col <?php echo $d === $todayD ? 'today' : ''; ?>" title="<?php echo date('d M', strtotime($d)) . ': ' . formatCurrency($cd['total']); ?>">
-                        <span class="chart-val"><?php echo (float)$cd['total'] > 0 ? number_format((float)$cd['total'] / 1000, 1) . 'k' : ''; ?></span>
-                        <div class="chart-bar" style="height: <?php echo $h; ?>%;"></div>
-                        <span class="chart-label"><?php echo $label; ?></span>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-        </div>
-    </div>
-
-    <div class="panel">
-        <div class="panel-head">
-            <h3><i class="fas fa-credit-card" style="color:#059669; margin-right:0.5rem;"></i>Payment Methods</h3>
-            <span class="badge badge-success"><?php echo date('M'); ?></span>
-        </div>
-        <div class="panel-body">
-            <?php
-            $payMax = 0;
-            foreach ($paymentStats as $ps) { $payMax = max($payMax, (float)$ps['total']); }
-            $payColors = [
-                'cash'   => ['#10b981', '#ecfdf5'],
-                'bkash'  => ['#ec4899', '#fdf2f8'],
-                'nagad'  => ['#f59e0b', '#fffbeb'],
-                'rocket' => ['#8b5cf6', '#f5f3ff'],
-                'card'   => ['#3b82f6', '#eff6ff'],
-                'bank'   => ['#0ea5e9', '#ecfeff'],
-            ];
-            if (empty($paymentStats)): ?>
-                <p class="text-muted text-center">No sales this month yet.</p>
-            <?php else: ?>
-                <?php foreach ($paymentStats as $ps): ?>
-                    <?php
-                    $pc = $payColors[$ps['payment_method']] ?? ['#64748b', '#f1f5f9'];
-                    $pct = $payMax > 0 ? round(((float)$ps['total'] / $payMax) * 100) : 0;
-                    ?>
-                    <div class="pay-stat">
-                        <div class="pay-icon" style="background: <?php echo $pc[1]; ?>; color: <?php echo $pc[0]; ?>;">
-                            <i class="fas <?php echo $ps['payment_method'] === 'cash' ? 'fa-money-bill-wave' : ($ps['payment_method'] === 'bkash' || $ps['payment_method'] === 'nagad' || $ps['payment_method'] === 'rocket' ? 'fa-mobile-alt' : 'fa-credit-card'); ?>"></i>
-                        </div>
-                        <div class="pay-bar">
-                            <div style="display:flex; justify-content:space-between; font-size:0.82rem;">
-                                <strong style="text-transform:capitalize;"><?php echo $ps['payment_method']; ?></strong>
-                                <span class="mini-num"><?php echo $ps['count']; ?> txns</span>
-                            </div>
-                            <div class="pay-bar-track">
-                                <div class="pay-bar-fill" style="width:<?php echo $pct; ?>%; background:<?php echo $pc[0]; ?>;"></div>
-                            </div>
-                        </div>
-                        <div class="lr-amt"><?php echo formatCurrency($ps['total']); ?></div>
-                    </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
+    <svg class="dash-hero-art" viewBox="0 0 190 150" fill="none" aria-hidden="true">
+        <!-- monitor -->
+        <rect x="10" y="18" width="112" height="72" rx="9" fill="#ffffff" fill-opacity=".95"/>
+        <rect x="18" y="26" width="96" height="56" rx="5" fill="#1e3a8a"/>
+        <rect x="24" y="32" width="38" height="6" rx="3" fill="#60a5fa"/>
+        <rect x="24" y="44" width="84" height="5" rx="2.5" fill="#3b82f6" fill-opacity=".55"/>
+        <rect x="24" y="53" width="66" height="5" rx="2.5" fill="#3b82f6" fill-opacity=".35"/>
+        <rect x="24" y="64" width="34" height="12" rx="6" fill="#34d399"/>
+        <rect x="64" y="64" width="44" height="12" rx="6" fill="#2563eb"/>
+        <rect x="54" y="90" width="26" height="12" rx="3" fill="#dbeafe"/>
+        <rect x="36" y="102" width="62" height="8" rx="4" fill="#bfdbfe"/>
+        <!-- receipt printer -->
+        <rect x="96" y="70" width="46" height="42" rx="8" fill="#0f172a" fill-opacity=".55"/>
+        <rect x="106" y="58" width="26" height="20" rx="3" fill="#f8fafc"/>
+        <rect x="110" y="63" width="18" height="3" rx="1.5" fill="#94a3b8"/>
+        <rect x="110" y="69" width="12" height="3" rx="1.5" fill="#cbd5e1"/>
+        <circle cx="119" cy="99" r="6" fill="#34d399"/>
+        <!-- potted plant -->
+        <path d="M156 96c0-16 10-26 22-28-2 16-9 26-22 28z" fill="#34d399"/>
+        <path d="M156 96c-2-14-10-21-22-22 3 14 10 21 22 22z" fill="#10b981"/>
+        <path d="M156 96V70" stroke="#059669" stroke-width="3" stroke-linecap="round"/>
+        <path d="M144 96h24l-3 26a5 5 0 0 1-5 5h-8a5 5 0 0 1-5-5z" fill="#e2e8f0"/>
+        <path d="M144 96h24l-1.4 12h-21.2z" fill="#cbd5e1"/>
+        <circle cx="20" cy="12" r="4" fill="#bfdbfe" fill-opacity=".8"/>
+        <circle cx="176" cy="24" r="6" fill="#a5b4fc" fill-opacity=".7"/>
+        <circle cx="8" cy="118" r="5" fill="#93c5fd" fill-opacity=".55"/>
+    </svg>
+    <div class="dash-hero-quote">
+        &ldquo;Better Tools for a Smarter Business&rdquo;
+        <span>&mdash; AVA IT Solution</span>
     </div>
 </div>
 
@@ -814,35 +949,42 @@ $avatarColors = [
     'linear-gradient(135deg, #64748b, #334155)'
 ];
 
-// Merge today/month/all into a single per-store row
-function storeRow($id, $name, $today, $month, $all) {
+// Merge today/all and this store's return money into a single row.
+// Net follows the rule the sales report uses: an exchange's extra is money in and
+// its difference payout is money out, while a plain return's refund is already off
+// the sale total.
+function storeRow($id, $name, $today, $all, $money) {
     $t = null; foreach ($today as $r) { if ($r['store_id'] == $id) $t = $r; }
-    $m = null; foreach ($month as $r) { if ($r['store_id'] == $id) $m = $r; }
     $a = null; foreach ($all as $r) { if ($r['store_id'] == $id) $a = $r; }
+    $mm = $money[$id] ?? null;
+    $todayTotal = $t ? (float)$t['total'] : 0;
     return [
         'store_id' => $id,
         'store_name' => $name,
-        'today'  => $t ? (float)$t['total'] : 0,
+        'today'  => $todayTotal,
         'today_count'  => $t ? (int)$t['sale_count'] : 0,
-        'month'  => $m ? (float)$m['total'] : 0,
-        'month_count'  => $m ? (int)$m['sale_count'] : 0,
+        'refund' => $mm ? (float)$mm['refund'] : 0,
+        'exchange' => $mm ? (float)$mm['extra'] : 0,
+        'net'    => round($todayTotal + ($mm ? (float)$mm['net_effect'] : 0), 2),
         'all'    => $a ? (float)$a['total'] : 0,
         'all_count'    => $a ? (int)$a['sale_count'] : 0,
     ];
 }
 $storeRows = [];
 foreach ($allStoreNames as $sid => $sname) {
-    $storeRows[] = storeRow($sid, $sname, $storeSales, $storeSalesMonth, $storeSalesAll);
+    $storeRows[] = storeRow($sid, $sname, $storeSales, $storeSalesAll, $storeMoney);
 }
 usort($storeRows, function ($x, $y) { return $y['all'] <=> $x['all']; });
 ?>
-<div class="panel" style="margin-bottom:1.75rem;">
+<?php if (hasPermission('stores')): ?>
+<div class="panel panel-click" style="margin-bottom:1.75rem;">
     <div class="panel-head">
-        <h3><i class="fas fa-store" style="color:#f59e0b; margin-right:0.5rem;"></i>Store-Wise Sales</h3>
+        <h3><span class="ph-ico" style="background:#fff4e0; color:#d97706;"><i class="fas fa-store"></i></span>Store-Wise Sales</h3>
         <div style="display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap;">
             <span class="badge badge-warning">Today: <?php echo formatCurrency($grandTotal); ?></span>
             <span class="badge badge-primary">This Month: <?php echo formatCurrency($storeMonthTotal); ?></span>
             <span class="badge badge-success">All-Time: <?php echo formatCurrency($storeAllTotal); ?></span>
+            <a href="stores.php" class="panel-link">View All</a>
         </div>
     </div>
     <div class="panel-body no-pad">
@@ -857,7 +999,9 @@ usort($storeRows, function ($x, $y) { return $y['all'] <=> $x['all']; });
                         <tr>
                             <th>Store</th>
                             <th>Today</th>
-                            <th>This Month</th>
+                            <th>Refund</th>
+                            <th>Exchange</th>
+                            <th>Net Sales</th>
                             <th>All-Time</th>
                             <th>Share (All-Time)</th>
                         </tr>
@@ -881,8 +1025,13 @@ usort($storeRows, function ($x, $y) { return $y['all'] <=> $x['all']; });
                                     <div class="mini-num"><?php echo $ss['today_count']; ?> txns</div>
                                 </td>
                                 <td>
-                                    <strong><?php echo formatCurrency($ss['month']); ?></strong>
-                                    <div class="mini-num"><?php echo $ss['month_count']; ?> txns</div>
+                                    <strong style="color:#dc2626;"><?php echo formatCurrency($ss['refund']); ?></strong>
+                                </td>
+                                <td>
+                                    <strong style="color:#0d9488;"><?php echo formatCurrency($ss['exchange']); ?></strong>
+                                </td>
+                                <td>
+                                    <strong style="color:#16a34a;"><?php echo formatCurrency($ss['net']); ?></strong>
                                 </td>
                                 <td>
                                     <strong><?php echo formatCurrency($ss['all']); ?></strong>
@@ -902,172 +1051,281 @@ usort($storeRows, function ($x, $y) { return $y['all'] <=> $x['all']; });
         <?php endif; ?>
     </div>
 </div>
+<?php endif; ?>
+<!-- KPI cards -->
+<?php
+// bKash collection for the month, read out of the same payment breakdown the
+// Payment Method donut uses, so the two can never disagree.
+$bkashMonth = 0.0;
+foreach ($paymentStats ?? [] as $pstat) {
+    if ($pstat['payment_method'] === 'bkash') { $bkashMonth += (float)$pstat['total']; }
+}
+?>
+<div class="kpi-grid">
+    <?php
+    // Each card is emitted only when this account has been granted it.
+    //
+    // Owner, admin and manager pass every hasKpiPermission() check, so their
+    // dashboard is exactly as before. A staff/cashier account gets only the
+    // boxes an admin ticked for it on the Users page - the unticked ones are
+    // never built and their figures never reach the HTML. The grid is
+    // auto-fit, so what is left reflows with no empty slots.
+    $kpis = [];
 
-<!-- Top Products -->
-<div class="panel" style="margin-bottom:1.75rem;">
+    if (hasKpiPermission('kpi_today_sale')) {
+        $kpis[] = ['tone' => 'teal', 'icon' => 'fa-money-check-alt', 'label' => "Today's Sale",
+            'value' => formatCurrency($todayTotal)];
+    }
+    // Kept apart rather than netted into one figure: 150 collected on an exchange and
+    // 150 handed back are different events for the shop, even where they meet.
+    if (hasKpiPermission('kpi_exchange')) {
+        $kpis[] = ['tone' => 'cyan', 'icon' => 'fa-arrow-down', 'label' => 'Exchange Extra',
+            'value' => formatCurrency($returnsToday['extra']), 'style' => 'color:#0d9488;'];
+    }
+    if (hasKpiPermission('kpi_refund')) {
+        $kpis[] = ['tone' => 'red', 'icon' => 'fa-arrow-up', 'label' => 'Refund',
+            'value' => formatCurrency($returnsToday['refund']), 'style' => 'color:#dc2626;'];
+    }
+    if (hasKpiPermission('kpi_monthly_sale')) {
+        $kpis[] = ['tone' => 'indigo', 'icon' => 'fa-calendar-days', 'label' => 'This Month',
+            'value' => formatCurrency((float)$monthlySales['total'])];
+    }
+    if (hasKpiPermission('kpi_yearly_sale')) {
+        $kpis[] = ['tone' => 'sky', 'icon' => 'fa-chart-column', 'label' => 'This Year',
+            'value' => formatCurrency($yearTotal)];
+    }
+    if (hasKpiPermission('kpi_bkash_month')) {
+        $kpis[] = ['tone' => 'rose', 'icon' => 'fa-mobile-alt', 'label' => 'bKash (This Month)',
+            'value' => formatCurrency($bkashMonth), 'style' => 'color:#ec4899;'];
+    }
+    if (hasKpiPermission('kpi_total_products')) {
+        $kpis[] = ['tone' => 'green', 'icon' => 'fa-box-open', 'label' => 'Total Products',
+            'value' => number_format((int)$totalProducts)];
+    }
+    // What the Top Selling panel used to spell out over six rows: the month's
+    // best earner, and the card opens the report that ranks every product.
+    // The link only becomes a link when the page behind it is allowed too,
+    // so a granted card cannot bounce the person back with a refusal flash.
+    if (hasKpiPermission('kpi_top_product')) {
+        $kpis[] = ['tone' => 'amber', 'icon' => 'fa-trophy', 'label' => 'Top Product (Month)',
+            'value' => formatCurrency((float)($topProducts[0]['total_revenue'] ?? 0)),
+            'href' => hasPermission('reports') ? 'reports.php' : ''];
+    }
+    if (hasKpiPermission('kpi_total_customers')) {
+        $kpis[] = ['tone' => 'violet', 'icon' => 'fa-users', 'label' => 'Total Customers',
+            'value' => number_format((int)$totalCustomers)];
+    }
+    if (hasKpiPermission('kpi_total_invoices')) {
+        $kpis[] = ['tone' => 'amber', 'icon' => 'fa-receipt', 'label' => 'Total Transactions',
+            'value' => number_format((int)($allTimeSales['count'] ?? 0)),
+            'href' => hasPermission('sales') ? 'sales.php' : ''];
+    }
+    if (hasKpiPermission('kpi_sms_sent')) {
+        $kpis[] = ['tone' => 'rose', 'icon' => 'fa-comment-sms', 'label' => 'SMS Sent',
+            'value' => number_format((int)$smsUsage['month'])];
+    }
+
+    if ($ecomWeekTotal !== null && hasKpiPermission('kpi_online_orders')) {
+        $kpis[] = ['tone' => 'cyan', 'icon' => 'fa-basket-shopping', 'label' => 'Online Orders',
+            'value' => formatCurrency($ecomWeekTotal)];
+    }
+
+    if (hasPermission('cashbook')) {
+        if (hasKpiPermission('kpi_total_expense')) {
+            $kpis[] = ['tone' => 'red', 'icon' => 'fa-arrow-up', 'label' => 'Expenses',
+                'value' => formatCurrency($cashToday['cash_out']), 'style' => 'color:#dc2626;'];
+        }
+        // The day's net sale after every expense it paid for. A refund and a book
+        // transfer are not expenses here - the refund is already inside the net
+        // sale and the transfer only moves cash between the shop's own drawers -
+        // so neither is taken off twice. Red when the day spent more than it sold.
+        if (hasKpiPermission('kpi_net_balance')) {
+            $kpis[] = ['tone' => $netToday >= 0 ? 'teal' : 'red', 'icon' => 'fa-scale-balanced', 'label' => 'Net Balance',
+                'value' => formatCurrency($netToday), 'style' => $netToday < 0 ? 'color:#dc2626;' : ''];
+        }
+        if (hasKpiPermission('kpi_cash_balance')) {
+            $kpis[] = ['tone' => $netCash >= 0 ? 'teal' : 'red', 'icon' => 'fa-hand-holding-usd', 'label' => 'Cash Balance',
+                'value' => formatCurrency($netCash), 'style' => $netCash < 0 ? 'color:#dc2626;' : ''];
+        }
+    }
+
+    if (hasKpiPermission('kpi_commission')) {
+        $kpis[] = ['tone' => 'gold', 'icon' => 'fa-coins', 'label' => 'Commission',
+            'value' => formatCurrency($commissionToday), 'style' => 'color:#b45309;'];
+    }
+
+    if (hasPermission('staff')) {
+        if (hasKpiPermission('kpi_staff_members')) {
+            $kpis[] = ['tone' => 'indigo', 'icon' => 'fa-user-tie', 'label' => 'Staff Members',
+                'value' => (int)$totalStaff];
+        }
+        if (hasKpiPermission('kpi_salary_balance')) {
+            $kpis[] = ['tone' => 'violet', 'icon' => 'fa-wallet', 'label' => 'Salary Balance',
+                'value' => formatCurrency($salaryBalance), 'style' => 'color:#7c3aed;'];
+        }
+    }
+
+    if (hasPermission('stock') && hasKpiPermission('kpi_low_stock')) {
+        $kpis[] = ['tone' => 'rose', 'icon' => 'fa-exclamation-triangle', 'label' => 'Low Stock Alerts',
+            'value' => (int)$lowStockCount, 'href' => 'stock.php'];
+    }
+
+    foreach ($kpis as $kpi) {
+        echo kpiCard($kpi);
+    }
+    ?>
+</div>
+
+<?php if (!$kpis && in_array((string)$user['role'], kpiGatedRoles(), true)): ?>
+<div class="bar-empty" style="margin-bottom:1.25rem;">
+    <i class="fas fa-lock"></i>
+    No dashboard cards have been enabled for your account. Ask the shop owner to tick them for you on the Users page.
+</div>
+<?php endif; ?>
+
+<!-- Sales — Last 30 Days -->
+<div class="panel">
     <div class="panel-head">
-        <h3><i class="fas fa-star" style="color:#f59e0b; margin-right:0.5rem;"></i>Top Products</h3>
-        <span class="badge badge-warning"><?php echo date('M Y'); ?></span>
+        <h3><span class="ph-ico" style="background:#eef2ff; color:#4f46e5;"><i class="fas fa-chart-column"></i></span>Sales &mdash; Last 30 Days</h3>
+        <span class="badge badge-info"><?php echo formatCurrency($barTotal); ?></span>
     </div>
     <div class="panel-body">
-        <?php if (empty($topProducts)): ?>
-            <p class="text-muted text-center">No sales data yet.</p>
+        <?php if ($barTotal <= 0): ?>
+            <div class="bar-empty">No sales in the last 30 days.</div>
         <?php else: ?>
-            <?php
-            $topMax = max(array_column($topProducts, 'total_revenue')) ?: 1;
-            ?>
-            <div class="grid-2col-eq" style="margin-bottom:0;">
-                <div>
-                    <?php foreach ($topProducts as $index => $product): ?>
-                        <?php if ($index >= 3) break; ?>
-                        <div class="list-row">
-                            <div class="lr-main">
-                                <span class="badge badge-primary" style="width:26px; text-align:center;"><?php echo $index + 1; ?></span>
-                                <span>
-                                    <strong style="font-size:0.88rem;"><?php echo sanitize($product['name']); ?></strong>
-                                    <div class="mini-num"><?php echo $product['total_qty']; ?> sold</div>
-                                </span>
-                            </div>
-                            <div class="lr-amt"><?php echo formatCurrency($product['total_revenue']); ?></div>
+            <div class="bars">
+                <?php foreach ($barDays as $bd_date => $bd_row):
+                    $v = (float)$bd_row['total'];
+                    $pct = $v > 0 ? max(4, round($v / $barMax * 84)) : 0;
+                ?>
+                    <div class="bar-col <?php echo $bd_date === $barToday ? 'today' : ''; ?>"
+                         title="<?php echo date('d M', strtotime($bd_date)) . ' · ' . formatCurrency($v) . ' · ' . (int)$bd_row['count'] . ' ' . ((int)$bd_row['count'] === 1 ? 'bill' : 'bills'); ?>">
+                        <div class="bar-track">
+                            <span class="bar-val"><?php echo $v > 0 ? compactMoney($v) : ''; ?></span>
+                            <i class="bar-fill" style="height:calc(<?php echo $pct; ?>% + 3px);"></i>
                         </div>
-                    <?php endforeach; ?>
-                </div>
-                <div>
-                    <?php foreach ($topProducts as $index => $product): ?>
-                        <?php if ($index < 3) continue; ?>
-                        <?php if ($index >= 6) break; ?>
-                        <div class="list-row">
-                            <div class="lr-main">
-                                <span class="badge badge-primary" style="width:26px; text-align:center;"><?php echo $index + 1; ?></span>
-                                <span>
-                                    <strong style="font-size:0.88rem;"><?php echo sanitize($product['name']); ?></strong>
-                                    <div class="mini-num"><?php echo $product['total_qty']; ?> sold</div>
-                                </span>
-                            </div>
-                            <div class="lr-amt"><?php echo formatCurrency($product['total_revenue']); ?></div>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
+                        <span class="bar-day"><?php echo (int)date('j', strtotime($bd_date)); ?></span>
+                    </div>
+                <?php endforeach; ?>
             </div>
         <?php endif; ?>
     </div>
 </div>
 
-<!-- Recent Sales + Low Stock + Cashbook -->
-<div class="grid-2col">
+<!-- Payment Method -->
+<div class="grid-2col-eq grid-adaptive">
+
     <div class="panel">
         <div class="panel-head">
-            <h3><i class="fas fa-receipt" style="color:#3b82f6; margin-right:0.5rem;"></i>Recent Sales</h3>
-            <a href="sales.php" class="btn btn-sm btn-outline">View All</a>
+            <h3><span class="ph-ico" style="background:#e7f9f1; color:#059669;"><i class="fas fa-chart-pie"></i></span>Payment Method</h3>
+            <span class="badge badge-success"><?php echo date('M Y'); ?></span>
         </div>
-        <div class="panel-body no-pad">
-            <div class="table-wrapper">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Invoice</th>
-                            <th>Customer</th>
-                            <th>Amount</th>
-                            <th>Payment</th>
-                            <th>Date</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php if (empty($recentSales)): ?>
-                            <tr><td colspan="5" class="text-center text-muted">No sales yet</td></tr>
-                        <?php else: ?>
-                            <?php foreach ($recentSales as $sale): ?>
-                                <tr>
-                                    <td><strong><?php echo sanitize($sale['invoice_number']); ?></strong></td>
-                                    <td><?php echo sanitize($sale['customer_name'] ?? 'Walk-in'); ?></td>
-                                    <td><?php echo formatCurrency($sale['total']); ?></td>
-                                    <td>
-                                        <span class="badge-pay" style="background:<?php echo ($payColors[$sale['payment_method']] ?? ['#64748b','#f1f5f9'])[1]; ?>; color:<?php echo ($payColors[$sale['payment_method']] ?? ['#64748b','#f1f5f9'])[0]; ?>;">
-                                            <?php echo ucfirst($sale['payment_method']); ?>
-                                        </span>
-                                    </td>
-                                    <td><?php echo date('d M, h:i A', strtotime($sale['created_at'])); ?></td>
-                                </tr>
+        <div class="panel-body">
+            <?php
+            $payTotal = array_sum(array_column($paymentStats, 'total'));
+            if (empty($paymentStats) || $payTotal <= 0): ?>
+                <p class="text-muted text-center">No sales this month yet.</p>
+            <?php else: ?>
+                <?php
+                $R = 42; $CIRC = 2 * M_PI * $R; $acc = 0;
+                $payIcon = function ($m) {
+                    if ($m === 'cash') { return 'fa-money-bill-wave'; }
+                    if (in_array($m, ['bkash', 'nagad', 'rocket'], true)) { return 'fa-mobile-alt'; }
+                    return 'fa-credit-card';
+                };
+                ?>
+                <div class="donut-wrap">
+                    <svg class="donut" viewBox="0 0 100 100" role="img" aria-label="Payment method split">
+                        <g transform="rotate(-90 50 50)">
+                            <circle cx="50" cy="50" r="<?php echo $R; ?>" stroke="#eef2f7"></circle>
+                            <?php foreach ($paymentStats as $ps): ?>
+                                <?php
+                                $pc = $payColors[$ps['payment_method']] ?? ['#64748b', '#f1f5f9'];
+                                $share = (float)$ps['total'] / $payTotal;
+                                $len = $share * $CIRC;
+                                ?>
+                                <circle cx="50" cy="50" r="<?php echo $R; ?>" stroke="<?php echo $pc[0]; ?>"
+                                        stroke-dasharray="<?php echo round($len, 2); ?> <?php echo round($CIRC - $len, 2); ?>"
+                                        stroke-dashoffset="<?php echo round(-$acc, 2); ?>"></circle>
+                                <?php $acc += $len; ?>
                             <?php endforeach; ?>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <div style="display:flex; flex-direction:column; gap:1.25rem;">
-        <div class="panel">
-            <div class="panel-head">
-                <h3><i class="fas fa-exclamation-triangle" style="color:#ef4444; margin-right:0.5rem;"></i>Low Stock</h3>
-                <span class="badge badge-danger"><?php echo $lowStockCount; ?></span>
-            </div>
-            <div class="panel-body">
-                <?php if (empty($lowStockProducts)): ?>
-                    <p class="text-muted text-center">All products have sufficient stock</p>
-                <?php else: ?>
-                    <?php foreach ($lowStockProducts as $product): ?>
-                        <div class="list-row">
-                            <div class="lr-main">
-                                <span class="mini-num"><i class="fas fa-box"></i></span>
-                                <strong style="font-size:0.88rem;"><?php echo sanitize($product['name']); ?></strong>
+                        </g>
+                        <text class="donut-center-label" x="50" y="42" text-anchor="middle">TOTAL SALES</text>
+                        <text class="donut-center-value" x="50" y="55" text-anchor="middle"><?php echo $payTotal >= 1000 ? number_format($payTotal / 1000, 1) . 'k' : number_format($payTotal); ?></text>
+                        <text class="donut-center-label" x="50" y="65" text-anchor="middle"><?php echo date('M Y'); ?></text>
+                    </svg>
+                    <div class="pay-legend">
+                        <?php foreach ($paymentStats as $ps): ?>
+                            <?php
+                            $pc = $payColors[$ps['payment_method']] ?? ['#64748b', '#f1f5f9'];
+                            $pct = round((float)$ps['total'] / $payTotal * 100, 1);
+                            ?>
+                            <div class="pay-legend-row">
+                                <span class="swatch" style="background:<?php echo $pc[0]; ?>;"></span>
+                                <i class="fas <?php echo $payIcon($ps['payment_method']); ?>" style="color:<?php echo $pc[0]; ?>; font-size:.8rem;"></i>
+                                <span class="pl-name"><?php echo $ps['payment_method']; ?></span>
+                                <span class="pl-amt"><?php echo formatCurrency($ps['total']); ?></span>
+                                <span class="pl-pct"><?php echo $pct; ?>%</span>
                             </div>
-                            <span class="badge badge-danger"><?php echo $product['stock']; ?> left</span>
-                        </div>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </div>
-        </div>
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3><i class="fas fa-book" style="color:#0891b2; margin-right:0.5rem;"></i>Expense</h3>
-                <a href="expense.php" class="btn btn-sm btn-outline">Open</a>
-            </div>
-            <div class="panel-body">
-                <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:0.75rem; margin-bottom:1rem;">
-                    <div style="background:#ecfdf5; border-radius:0.75rem; padding:0.7rem; text-align:center;">
-                        <div class="mini-num">Sales</div>
-                        <strong style="color:#059669;"><?php echo formatCurrency($allTimeSales['total']); ?></strong>
-                    </div>
-                    <div style="background:#fef2f2; border-radius:0.75rem; padding:0.7rem; text-align:center;">
-                        <div class="mini-num">Expenses</div>
-                        <strong style="color:#dc2626;"><?php echo formatCurrency($cashTotals['cash_out']); ?></strong>
-                    </div>
-                    <div style="background:#eff6ff; border-radius:0.75rem; padding:0.7rem; text-align:center;">
-                        <div class="mini-num">Balance</div>
-                        <strong style="color:#2563eb;"><?php echo formatCurrency($netCash); ?></strong>
+                        <?php endforeach; ?>
                     </div>
                 </div>
-                <?php if (!empty($recentCash)): ?>
-                    <?php foreach ($recentCash as $ce): ?>
-                        <div class="list-row">
-                            <div class="lr-main">
-                                <span class="badge badge-<?php echo $ce['type'] === 'cash_in' ? 'success' : 'danger'; ?>">
-                                    <i class="fas fa-<?php echo $ce['type'] === 'cash_in' ? 'arrow-down' : 'arrow-up'; ?>"></i>
-                                </span>
-                                <span>
-                                    <strong style="font-size:0.85rem;"><?php echo $ce['type'] === 'cash_in' ? 'Cash In' : sanitize($ce['note'] ?: 'Expense'); ?></strong>
-                                    <div class="mini-num"><?php echo date('d M, h:i A', strtotime($ce['created_at'])); ?></div>
-                                </span>
-                            </div>
-                            <div class="lr-amt" style="color:<?php echo $ce['type'] === 'cash_in' ? '#059669' : '#dc2626'; ?>;">
-                                <?php echo $ce['type'] === 'cash_in' ? '+' : '-'; ?> <?php echo formatCurrency($ce['amount']); ?>
-                            </div>
-                        </div>
-                    <?php endforeach; ?>
-                <?php else: ?>
-                    <p class="text-muted text-center">No cashbook entries yet.</p>
-                <?php endif; ?>
-            </div>
+            <?php endif; ?>
         </div>
     </div>
 </div>
 
+<!-- Expense summary -->
+<?php if (hasPermission('cashbook')): ?>
+<div class="panel panel-click">
+    <div class="panel-head">
+        <h3><span class="ph-ico" style="background:#e4f8fb; color:#0891b2;"><i class="fas fa-book"></i></span>Cashbook</h3>
+        <a href="expense.php" class="panel-link">Open</a>
+    </div>
+    <div class="panel-body">
+        <div class="cols-3" style="margin-bottom:1rem;">
+            <div style="background:var(--gray-50); border-radius:.75rem; padding:.7rem; text-align:center;">
+                <div class="mini-num">Sales</div>
+                <strong style="color:#059669;"><?php echo formatCurrency($allTimeSales['total']); ?></strong>
+            </div>
+            <div style="background:var(--gray-50); border-radius:.75rem; padding:.7rem; text-align:center;">
+                <div class="mini-num">Expenses</div>
+                <strong style="color:#dc2626;"><?php echo formatCurrency($cashTotals['cash_out']); ?></strong>
+            </div>
+            <div style="background:var(--gray-50); border-radius:.75rem; padding:.7rem; text-align:center;">
+                <div class="mini-num">Balance</div>
+                <strong style="color:#2563eb;"><?php echo formatCurrency($netCash); ?></strong>
+            </div>
+        </div>
+        <?php if (!empty($recentCash)): ?>
+            <?php foreach ($recentCash as $ce): ?>
+                <div class="list-row">
+                    <div class="lr-main">
+                        <span class="badge badge-<?php echo $ce['type'] === 'cash_in' ? 'success' : 'danger'; ?>">
+                            <i class="fas fa-<?php echo $ce['type'] === 'cash_in' ? 'arrow-down' : 'arrow-up'; ?>"></i>
+                        </span>
+                        <span>
+                            <strong style="font-size:0.85rem;"><?php echo $ce['type'] === 'cash_in' ? 'Cash In' : sanitize($ce['note'] ?: 'Expense'); ?></strong>
+                            <div class="mini-num"><?php echo date('d M, h:i A', strtotime($ce['created_at'])); ?></div>
+                        </span>
+                    </div>
+                    <div class="lr-amt" style="color:<?php echo $ce['type'] === 'cash_in' ? '#059669' : '#dc2626'; ?>;">
+                        <?php echo $ce['type'] === 'cash_in' ? '+' : '-'; ?> <?php echo formatCurrency($ce['amount']); ?>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        <?php else: ?>
+            <p class="text-muted text-center">No cashbook entries yet.</p>
+        <?php endif; ?>
+    </div>
+</div>
+<?php endif; ?>
+
 <!-- Staff Salary Overview -->
+<?php if (hasPermission('staff')): ?>
 <div class="panel" style="margin-bottom:1.5rem;">
     <div class="panel-head">
-        <h3><i class="fas fa-user-tie" style="color:#7c3aed; margin-right:0.5rem;"></i>Staff Salary Overview</h3>
+        <h3><span class="ph-ico" style="background:#f1ecff; color:#7c3aed;"><i class="fas fa-user-tie"></i></span>Staff Salary Overview</h3>
         <a href="staff.php" class="btn btn-sm btn-outline">Manage Staff</a>
     </div>
     <div class="panel-body no-pad">
@@ -1103,6 +1361,16 @@ usort($storeRows, function ($x, $y) { return $y['all'] <=> $x['all']; });
             </div>
         <?php endif; ?>
     </div>
+</div>
+<?php endif; ?>
+
+<div class="page-foot">
+    <div>
+        <span class="pf-brand">AVA IT Solution</span>
+        <span class="pf-sep">|</span>
+        <span>Smart Collection</span>
+    </div>
+    <div>&copy; <?php echo date('Y'); ?> AVA IT Solution. All rights reserved.</div>
 </div>
 
 <?php include 'includes/footer.php'; ?>

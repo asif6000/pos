@@ -126,8 +126,6 @@ CREATE TABLE IF NOT EXISTS customers (
     owner_id INT NULL,
     google_contact_id VARCHAR(255) NULL,
     google_synced_at TIMESTAMP NULL,
-    has_whatsapp TINYINT(1) NULL DEFAULT NULL,      -- 1 = on WhatsApp, 0 = not, NULL = unchecked
-    whatsapp_checked_at TIMESTAMP NULL DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_name (name),
@@ -148,7 +146,7 @@ CREATE TABLE IF NOT EXISTS sales (
     total DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
     paid_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
     change_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-    payment_method ENUM('cash', 'bkash', 'nagad', 'rocket', 'card', 'bank') NOT NULL DEFAULT'cash',
+    payment_method ENUM('cash', 'bkash', 'nagad', 'rocket', 'card', 'bank', 'lottery') NOT NULL DEFAULT'cash',
     payment_status ENUM('paid', 'partial', 'unpaid') NOT NULL DEFAULT'paid',
     note TEXT,
     owner_id INT NULL,
@@ -252,7 +250,18 @@ CREATE TABLE IF NOT EXISTS role_permissions (
     INDEX idx_role_slug (role_slug),
     INDEX idx_permission (permission)) ENGINE=InnoDB;
 
--- 18. System Settings Table (global, not per-owner)
+-- 18. Per-account Dashboard KPI permissions
+-- One row per card an admin grants a staff/cashier account on the Users page.
+-- No row means no card; owner/admin/manager are not limited by this table.
+CREATE TABLE IF NOT EXISTS user_kpi_permissions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    kpi_key VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_user_kpi (user_id, kpi_key),
+    INDEX idx_user_id (user_id)) ENGINE=InnoDB;
+
+-- 19. System Settings Table (global, not per-owner)
 CREATE TABLE IF NOT EXISTS system_settings (
     id INT AUTO_INCREMENT PRIMARY KEY,
     setting_key VARCHAR(100) NOT NULL UNIQUE,

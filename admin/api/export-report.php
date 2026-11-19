@@ -12,6 +12,10 @@ $db = getDB();
 $user = getCurrentUser();
 $ownerId = $user['owner_id'];
 
+// The export can never be wider than the report page: a counter account
+// (staff/cashier) exports its own bills only.
+list($ownScope, $ownParams) = ownSalesScopeSql($user);
+
 $reportType = sanitize($_GET['type'] ?? 'daily');
 $dateFrom = sanitize($_GET['date_from'] ?? date('Y-m-d'));
 $dateTo = sanitize($_GET['date_to'] ?? date('Y-m-d'));
@@ -34,10 +38,10 @@ $sales = $db->prepare("
     FROM sales s
     JOIN users u ON s.user_id = u.id
     LEFT JOIN customers c ON s.customer_id = c.id
-    WHERE u.owner_id = ? AND DATE(s.created_at) BETWEEN ? AND ?
+    WHERE " . saleOwnerScopeSql($ownerId) . "$ownScope AND DATE(s.created_at) BETWEEN ? AND ?
     ORDER BY s.created_at DESC
 ");
-$sales->execute([$ownerId, $dateFrom, $dateTo]);
+$sales->execute(array_merge([$ownerId, $ownerId], $ownParams, [$dateFrom, $dateTo]));
 $salesData = $sales->fetchAll();
 
 $summary = $db->prepare("
@@ -48,9 +52,9 @@ $summary = $db->prepare("
            COALESCE(AVG(s.total), 0) as avg_sale
     FROM sales s
     JOIN users u ON s.user_id = u.id
-    WHERE u.owner_id = ? AND DATE(s.created_at) BETWEEN ? AND ?
+    WHERE " . saleOwnerScopeSql($ownerId) . "$ownScope AND DATE(s.created_at) BETWEEN ? AND ?
 ");
-$summary->execute([$ownerId, $dateFrom, $dateTo]);
+$summary->execute(array_merge([$ownerId, $ownerId], $ownParams, [$dateFrom, $dateTo]));
 $summaryData = $summary->fetch();
 
 $format = $_GET['format'] ?? 'xls';

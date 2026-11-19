@@ -14,9 +14,7 @@ require_once '../config/db.php';
 require_once '../config/product_variables.php';
 startSecureSession();
 
-if (!isLoggedIn() || !hasPermission('variables')) {
-    redirect('../auth/login.php');
-}
+requirePermission('variables');
 
 define('PAGE_TITLE', 'Variable Name');
 

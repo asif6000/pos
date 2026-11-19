@@ -20,6 +20,14 @@
  */
 
 require_once __DIR__ . '/db.php';
+// Required in its own right rather than left to whichever page happens to have
+// loaded it: getSmsSettings(), marketingSendSms() and the preview below call
+// getMarketingSettings(), marketingCleanValue(), marketingNormalizePhone() and
+// marketingFormatPhone(), and all four live in marketing.php. Any caller that
+// included only this file died with "Call to undefined function
+// getMarketingSettings()", which the POS reported as a plain "SMS pathano jay
+// ni" with no reason attached.
+require_once __DIR__ . '/marketing.php';
 
 /**
  * Built-in provider presets.
@@ -42,6 +50,11 @@ require_once __DIR__ . '/db.php';
  *   /api/sendSmsApi                      -> 404, the path an earlier version of
  *                                          this file shipped, which never existed
  *
+ * Both endpoints answer the same on https:// (443) as on http:// (80), so the
+ * presets use https: plain port 80 is routinely dropped by Wi-Fi, ISPs and
+ * antivirus firewalls, and when it is, the shop sees a connection error that
+ * looks like a broken POS rather than a blocked port.
+ *
  * Past 1032 the provider checks the CALLER's public IP against the account
  * allowlist ("not Whitelisted. Please whitelist ip from Phonebook"). That can
  * only be changed inside the provider's own account, never from here.
@@ -62,11 +75,17 @@ function getSmsProviders()
         ],
         'bulksmsbd' => [
             'label'       => 'bulksmsbd.net',
-            'balance_url' => 'http://bulksmsbd.net/api/getBalanceApi?api_key={apikey}',
+            'balance_url' => 'https://bulksmsbd.net/api/getBalanceApi?api_key={apikey}',
             // Documented shape, verified to get past field validation.
             // {senderid} is intentionally blank: it is account-specific, so the
             // shop fills the Sender ID box on the settings screen.
-            'get_url'     => 'http://bulksmsbd.net/api/smsapi?api_key={apikey}&type=text&number={number}&senderid={senderid}&message={message}',
+            //
+            // https:// rather than http:// on purpose. Plain port 80 is the one
+            // thing public Wi-Fi, some ISPs and antivirus firewalls block, and
+            // the failure it produces ("Could not connect to bulksmsbd.net port
+            // 80") looks like a broken POS. Both endpoints answer identically on
+            // 443, so there is nothing to lose.
+            'get_url'     => 'https://bulksmsbd.net/api/smsapi?api_key={apikey}&type=text&number={number}&senderid={senderid}&message={message}',
             'post_url'    => '',
             'hint'        => 'Ei URL ta provider er documentation er motoi — path ar field gulo verify kora. '
                            . 'Ekta kaj apnake korte hobe: settings e thaka "Sender ID" box e apnar '
@@ -309,45 +328,32 @@ function marketingSendSmsWith(array $settings, $phone, $message, $ownerId = null
     }
 
     // $method was resolved earlier from which URL box the shop filled in.
-
-    // cURL is optional in a PHP build and is routinely absent on shared
-    // hosting. Without this check curl_init() raises an Error (not an
-    // Exception, so no surrounding catch sees it) and the page is a blank 500.
-    $hasCurl = function_exists('appHasCurl') ? appHasCurl() : function_exists('curl_init');
-    if (!$hasCurl) {
-        return [
-            'ok'    => false,
-            'sent'  => 0,
-            'error' => 'This server has no cURL support (php-curl is not enabled), so SMS cannot be sent from here. Ask your host to enable it.',
-            'raw'   => '',
-        ];
-    }
-
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 30,
-        CURLOPT_CONNECTTIMEOUT => 8,
-        CURLOPT_HTTPHEADER     => $headers,
-    ]);
+    //
+    // A GET cannot carry a body, so its pairs go on the query string. A GET that
+    // already had its slots filled needs no body at all.
+    $requestUrl = $url;
+    $post       = null;
     if ($method === 'GET') {
-        // A GET with slots already carries everything in the query string
         if ($body !== null) {
-            curl_setopt($ch, CURLOPT_URL, $url . (strpos($url, '?') === false ? '?' : '&') . $body);
+            $requestUrl .= (strpos($requestUrl, '?') === false ? '?' : '&') . $body;
         }
     } else {
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $body ?? '');
+        $post = $body ?? '';
     }
 
-    $response = curl_exec($ch);
-    $err      = curl_error($ch);
-    $code     = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+    $res = marketingSmsFetch($requestUrl, [
+        'headers' => $headers,
+        'post'    => $post,
+        'timeout' => 30,
+        'connect' => 8,
+    ]);
 
-    if ($response === false) {
-        return ['ok' => false, 'manual' => false, 'error' => 'Gateway unreachable: ' . $err, 'response' => ''];
+    if (!$res['ok']) {
+        return ['ok' => false, 'manual' => false, 'error' => $res['error'], 'response' => ''];
     }
+
+    $response = $res['body'];
+    $code     = $res['code'];
 
     // bulksmsbd.net and friends answer HTTP 200 even when they reject the
     // message, so the body has to be inspected rather than the status code.
@@ -393,6 +399,202 @@ function marketingSmsHttpHint($code)
         default:
             return '';
     }
+}
+
+/**
+ * Is cURL usable from here?
+ *
+ * db.php has appHasCurl() for the web app, but this file is also pulled in by
+ * the standalone scripts under tools/, which do not always include db.php, so
+ * the fallback stays.
+ */
+function marketingSmsHasCurl()
+{
+    return function_exists('appHasCurl') ? appHasCurl() : function_exists('curl_init');
+}
+
+/**
+ * One HTTP round trip to the SMS gateway.
+ *
+ * Everything that talks to a provider goes through here, so the network
+ * failures that actually happen in a shop are handled once instead of once per
+ * call site:
+ *
+ *   1. The URL is plain http:// and port 80 is refused or times out. Retried
+ *      over https:// on 443. Port 80 is the one thing public Wi-Fi, some ISPs
+ *      and most antivirus firewalls drop, and a provider that serves 443
+ *      answers identically over it. This is the fix for
+ *      "Failed to connect to bulksmsbd.net port 80 after 0 ms".
+ *   2. Nothing needed retrying, so the connect error is rewritten into
+ *      marketingSmsConnectHint() instead of being shown raw.
+ *
+ * The HTTPS retry only runs when the first attempt never opened a TCP
+ * connection (errno 7 or 28). That is what makes it safe on the send path: no
+ * request reached the provider, so the retry cannot deliver the same SMS twice.
+ *
+ * cURL is optional in a PHP build and is routinely absent on shared hosting.
+ * Without the guard, curl_init() raises an Error (not an Exception, so no
+ * surrounding catch sees it) and the page is a blank 500.
+ *
+ * @return array{ok:bool, body:string, error:string, code:int}
+ */
+function marketingSmsFetch($url, array $opts = [])
+{
+    $headers = (array)($opts['headers'] ?? []);
+    $post    = array_key_exists('post', $opts) ? $opts['post'] : null;
+    $timeout = (int)($opts['timeout'] ?? 20);
+    $connect = (int)($opts['connect'] ?? 8);
+
+    if (!marketingSmsHasCurl()) {
+        return [
+            'ok'    => false,
+            'body'  => '',
+            'code'  => 0,
+            'error' => 'This server has no cURL support (php-curl is not enabled), so the SMS '
+                     . 'gateway cannot be reached from here. Ask your host to enable it.',
+        ];
+    }
+
+    $firstErr   = '';
+    $firstErrNo = 0;
+    $attempt    = 0;
+    $usedUrl    = $url;
+
+    while ($attempt < 2) {
+        $attempt++;
+
+        $ch = curl_init($usedUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => $timeout,
+            CURLOPT_CONNECTTIMEOUT => $connect,
+            CURLOPT_HTTPHEADER     => $headers,
+        ]);
+        if ($post !== null) {
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $post);
+        }
+
+        $body = curl_exec($ch);
+        $err  = curl_error($ch);
+        $no   = (int)curl_errno($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($body !== false) {
+            return ['ok' => true, 'body' => (string)$body, 'error' => '', 'code' => $code];
+        }
+
+        // Keep the FIRST failure: it is the one against the URL the shop typed,
+        // so that is what the message has to describe.
+        if ($firstErr === '') {
+            $firstErr   = $err;
+            $firstErrNo = $no;
+        }
+
+        // 7 = could not connect, 28 = timed out. Both mean nothing was sent.
+        $neverConnected = ($no === 7 || $no === 28);
+        if ($attempt > 1 || !$neverConnected || stripos($url, 'http://') !== 0) {
+            break;
+        }
+        $usedUrl = 'https://' . substr($url, 7);
+    }
+
+    return [
+        'ok'    => false,
+        'body'  => '',
+        'code'  => 0,
+        'error' => marketingSmsConnectHint($firstErrNo, $firstErr, $usedUrl !== $url, $url),
+    ];
+}
+
+/**
+ * Host (and port when it is not the scheme default) out of a gateway URL, for
+ * use in an error message.
+ */
+function marketingSmsHostLabel($url)
+{
+    $parts = parse_url((string)$url);
+    if (empty($parts['host'])) {
+        return '';
+    }
+    $host  = $parts['host'];
+    $isDef = (!isset($parts['port']))
+          || (isset($parts['scheme']) && (int)$parts['port'] === ($parts['scheme'] === 'https' ? 443 : 80));
+    return $host . ($isDef ? '' : ':' . $parts['port']);
+}
+
+/**
+ * curl's connect error, rewritten so a shopkeeper can act on it.
+ *
+ * curl_error() reads like "Failed to connect to bulksmsbd.net port 80 after 0
+ * ms: Could not connect to server". That names a port and a timing and nothing
+ * else, and it reads like a bug in the POS when it is not - the request never
+ * left the machine, so the answer is always on the network side. errno splits
+ * the causes that need different advice (dead connection, blocked port,
+ * provider down), and local vs live install changes it again for the same
+ * reason 1032 does: a home connection can be locked down by the shop's own
+ * router or antivirus, and a live host usually cannot.
+ *
+ * $url is the URL that was attempted, so the message names the provider the
+ * shop actually configured rather than assuming bulksmsbd. curl's own wording
+ * is kept in brackets so support can still read it.
+ */
+function marketingSmsConnectHint($errno, $curlError, $triedHttps = false, $url = '')
+{
+    $raw  = trim((string)$curlError);
+    $host = marketingSmsHostLabel($url);
+    // "bulksmsbd.net" reads better than a bare hostname in running text
+    $host = trim($host, ':') ?: 'provider';
+    $name = $host;
+
+    switch ((int)$errno) {
+        case 6: // CURLE_COULDNT_RESOLVE_HOST
+            $msg = "{$name} er domain name DNS e resolve hocche na - ei computer e internet "
+                 . 'connection nai, ba DNS block kora. Onno kono browser e '
+                 . "http://{$host} kholar try korun: khule gele network thik, na hole Wi-Fi ba "
+                 . 'antivirus firewall DNS block kore rakhte pare.';
+            break;
+
+        case 7: // CURLE_COULDNT_CONNECT
+            $msg = "{$name} e TCP connection jachhe na. Eta POS er code er dosh na - request ei "
+                 . 'computer theke ber hoi ni.';
+            if (marketingSmsIsLocalInstall()) {
+                $msg .= ' Ghar er Wi-Fi/router ba antivirus firewall ei port ta block kore rakhte '
+                      . "pare. Browser e http://{$host} kholar try korun.";
+            } else {
+                $msg .= ' Server er firewall ba hosting provider ei port ta block kore rakhte '
+                      . 'pare. Settings e balance/send URL e http:// ke https:// e change kore '
+                      . 'abar chalan den - port 443 onek shokal bondho thake.';
+            }
+            break;
+
+        case 28: // CURLE_OPERATION_TIMEDOUT
+            $msg = "{$name} e connection korte giyechilo, timeoy tain hoye gelo (timeout). "
+                 . 'Internet slow, ba provider er server slow/busy. Ektu poribar abar chalan den.';
+            break;
+
+        case 35: // CURLE_SSL_CONNECT_ERROR
+            $msg = 'HTTPS handshake fail hoye gelo - server er certificate verify hocche na, ba '
+                 . 'network e SSL inspection ache. Certificate verify off kora niyer bishoy, tai '
+                 . 'ei kajta POS er theke kora jay na; provider ke support e janaben.';
+            break;
+
+        default:
+            $msg = "{$name} er sathe connection kora jay ni.";
+            break;
+    }
+
+    if ($triedHttps) {
+        $msg .= ' (Ei URL HTTPS / port 443 e o try kora hocchilo, seta-o fail hoye geche. Tai '
+              . 'sholo network ba firewall e dhaka, shudhu provider down na-o hote pare. Ektu poribar '
+              . 'chalan den.)';
+    }
+    if ($raw !== '') {
+        $msg .= " [{$raw}]";
+    }
+
+    return $msg;
 }
 
 /**
@@ -575,7 +777,7 @@ function marketingSmsResponseProblem($body, $ownerId = null)
  * Query the gateway's credit balance.
  *
  * Works with the bulksmsbd.net balance endpoint:
- *   GET http://bulksmsbd.net/api/getBalanceApi?api_key=KEY
+ *   GET https://bulksmsbd.net/api/getBalanceApi?api_key=KEY
  *
  * @return array{ok:bool,balance:string,error:string,raw:string}
  */
@@ -603,28 +805,14 @@ function marketingSmsCheckBalance($ownerId)
 
     $url = marketingFillSmsUrl($urlTemplate, $apiKey);
 
-    $hasCurl = function_exists('appHasCurl') ? appHasCurl() : function_exists('curl_init');
-    if (!$hasCurl) {
-        return [
-            'ok' => false, 'balance' => '', 'raw' => '',
-            'error' => 'This server has no cURL support (php-curl is not enabled), so the balance cannot be checked.',
-        ];
+    $res = marketingSmsFetch($url, ['timeout' => 20, 'connect' => 8]);
+
+    if (!$res['ok']) {
+        return ['ok' => false, 'balance' => '', 'raw' => '', 'error' => $res['error']];
     }
 
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 20,
-        CURLOPT_CONNECTTIMEOUT => 8,
-    ]);
-    $body = curl_exec($ch);
-    $err  = curl_error($ch);
-    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($body === false) {
-        return ['ok' => false, 'balance' => '', 'raw' => '', 'error' => 'Could not reach the gateway: ' . $err];
-    }
+    $body = $res['body'];
+    $code = $res['code'];
 
     $json = json_decode((string)$body, true);
     if (is_array($json)) {
@@ -659,6 +847,69 @@ function marketingSmsCheckBalance($ownerId)
 }
 
 /**
+ * The shop's own name, spelled the way every other customer-facing message
+ * spells it.
+ *
+ * marketing_sender_name is a marketing-only override, and a shop that never
+ * visited that one box has it empty — which is why {shop} rendered as nothing
+ * at all and the customer read "Hi Rahim,  e offer ache!". shop_name is what the
+ * Settings page saves and what the printed receipt and the invoice SMS already
+ * use, and the first branch name covers a shop that filled neither.
+ */
+function marketingShopName($ownerId, array $settings = [])
+{
+    $name = marketingCleanValue($settings['marketing_sender_name'] ?? '');
+    if ($name !== '') {
+        return $name;
+    }
+
+    $db = getDB();
+
+    $stmt = $db->prepare("SELECT setting_value FROM settings
+                          WHERE owner_id = ? AND setting_key = 'shop_name' LIMIT 1");
+    $stmt->execute([$ownerId]);
+    $name = marketingCleanValue((string)$stmt->fetchColumn());
+    if ($name !== '') {
+        return $name;
+    }
+
+    $stmt = $db->prepare("SELECT name FROM stores WHERE owner_id = ?
+                          ORDER BY status = 'active' DESC, id ASC LIMIT 1");
+    $stmt->execute([$ownerId]);
+    return marketingCleanValue((string)$stmt->fetchColumn());
+}
+
+/**
+ * Last gate before a message leaves for a customer's phone.
+ *
+ * Two artefacts have arrived in shops' SMS threads that nobody typed: the bare
+ * word "undefined" after the message (an old browser build wrote a missing
+ * dataset value into the compose box at the cursor), and an unfilled {token}
+ * going out with its braces. The shop pays per segment for either, and the
+ * customer reads a broken sentence, so the server tidies the text instead of
+ * forwarding whatever the client put in the box.
+ *
+ * No /u on these patterns: they only ever match ASCII, and on a message
+ * carrying an emoji a malformed byte sequence would make preg_replace() return
+ * null and blank out the SMS entirely.
+ *
+ * Case-sensitivity is deliberate and narrow: "undefined" and "NaN" are spelled
+ * exactly like that by the language, so the two patterns cannot collide with
+ * anything a shopkeeper typed.
+ */
+function marketingScrubMessage($text)
+{
+    $text = preg_replace('/\bundefined\b|\bNaN\b/', '', (string)$text);
+    // A token the sender names with a space inside — "{smart collection}" has
+    // been seen going out with its braces — is still a token nobody filled.
+    $text = preg_replace('/\{[a-z0-9_ ]+\}/i', '', $text);
+    // "Hi  , Rahim" reads as a typo left behind by the word that was removed
+    $text = preg_replace('/[ \t]+(?=[,.;:!?])/', '', $text);
+    $text = preg_replace('/[ \t]{2,}/', ' ', $text);
+    return trim(preg_replace('/\n{3,}/', "\n\n", $text));
+}
+
+/**
  * Personalise a message template with a customer row
  * Supported tokens: {name}, {full_name}, {phone}, {shop}, {last_visit_days}, {last_visit}
  */
@@ -669,23 +920,22 @@ function marketingRenderTemplate($template, array $customer, array $opts = [])
     $first = $name !== '' ? explode(' ', $name)[0] : 'there';
 
     $days = null;
-    if (isset($opts['last_visit_days']) && $opts['last_visit_days'] !== null) {
+    if (array_key_exists('last_visit_days', $opts)
+        && $opts['last_visit_days'] !== null && $opts['last_visit_days'] !== '') {
         $days = (int)$opts['last_visit_days'];
     }
 
     $replacements = [
-        '{name}'      => $first,
-        '{full_name}' => $name,
-        '{phone}'     => marketingFormatPhone($customer['phone'] ?? ''),
-        '{shop}'      => $opts['shop'] ?? '',
+        '{name}'            => $first,
+        '{full_name}'       => $name,
+        '{phone}'           => marketingFormatPhone($customer['phone'] ?? ''),
+        '{shop}'            => $opts['shop'] ?? '',
+        // A customer with no sale has no number of days to name, and the
+        // sentence still has to read: "apni onek din dhore ese nai".
+        '{last_visit_days}' => $days === null ? 'onek' : (string)$days,
+        '{last_visit}'      => $days === null ? 'kotodin'
+                            : ($days === 0 ? 'today' : "{$days} day(s) ago"),
     ];
 
-    $out = strtr($template, $replacements);
-    if ($days !== null) {
-        $out = strtr($out, [
-            '{last_visit_days}' => (string)$days,
-            '{last_visit}'      => $days === 0 ? 'today' : "{$days} day(s) ago",
-        ]);
-    }
-    return $out;
+    return marketingScrubMessage(strtr($template, $replacements));
 }

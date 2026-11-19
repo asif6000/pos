@@ -1,38 +1,42 @@
 <?php
 /**
- * POS System - Main Entry Point
+ * POS System - the home page, and the front door of the whole site.
  *
- * The front door. Everything a visitor types lands here, so this file decides
- * between the public landing page and the page the logged-in account should
- * actually work on.
+ * Everything a visitor types lands here. Signed out, this URL IS the home page -
+ * it used to redirect to /home.php, which cost every first-time visitor a round
+ * trip, put a filename in the address bar of the site people are told to type,
+ * and left the root itself looking like an empty folder to anything that crawls
+ * it. Requiring the page instead of bouncing to it keeps every link on it
+ * (auth/login.php, privacy.php, #pricing) resolving exactly as before, because
+ * this file sits in the same directory.
  *
- * This used to pick the destination by comparing users.role against the literal
- * strings 'admin' and 'staff'. Two things were wrong with that:
+ * Signed in, this file decides which page the account should actually work on.
  *
- *   1. It disagreed with the rest of the app. auth/login.php and all three
- *      sidebars choose by permission (defaultLandingPage()), so a manager who
- *      had been granted the dashboard was put somewhere else here, and the
- *      Roles page and the menu were reading two different things.
+ * That choice used to compare users.role against the literal strings 'admin' and
+ * 'staff'. Two things were wrong with that:
+ *
+ *   1. It disagreed with the rest of the app. auth/login.php and the sidebars
+ *      choose by permission (defaultLandingPage()), so a manager who had been
+ *      granted the dashboard was put somewhere else here, and the Roles page and
+ *      the menu were reading two different things.
  *   2. It had no fallback. A role matching neither literal fell to
  *      cashier/pos.php, which a cashier-only account can open but an account
  *      with no POS permission cannot - so it redirected into a page that
  *      immediately refused it.
  *
- * The redirect target is also relative, which is only correct while this file
- * sits beside the page it names. A copy of admin/index.php (three lines, a bare
- * header("Location: dashboard.php")) landing at the document root instead sent
- * every visitor to /dashboard.php, which does not exist there - the whole site
- * answered 404 from its front door. The paths below are absolute from the
- * document root so the file works wherever it is deployed.
+ * The redirect targets stay relative on purpose: this file IS the document root's
+ * index.php, so 'admin/dashboard.php' resolves against '/' in production and
+ * against '/admin/' in the XAMPP copy. Hardcoding either one breaks the other.
  */
 
 require_once 'config/db.php';
 startSecureSession();
 
-// Signed out: the public page. It carries the login link, so there is no point
-// bouncing a visitor to the login form and back again.
+// Signed out: show the home page here. It carries the login and register links,
+// so there is no point bouncing a visitor away from either.
 if (!isLoggedIn()) {
-    redirect('landing.php');
+    require __DIR__ . '/home.php';
+    exit;
 }
 
 $user = getCurrentUser();

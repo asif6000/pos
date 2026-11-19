@@ -42,6 +42,27 @@ try {
 } catch (PDOException $e) {}
 
 try {
+    // The bill is marked printed only inside the caller's scope: the shop that
+    // rang it, and for a counter account (staff/cashier) only the bill it rang
+    // up itself. An id typed into a request can no longer touch anyone else's.
+    $saleScope = " JOIN users u ON s.user_id = u.id WHERE s.id = ?" .
+        (isSuperAdminUser($user) ? '' : " AND " . saleOwnerScopeSql($ownerId, 's', 'u'));
+    $saleParams = [$saleId];
+    if (!isSuperAdminUser($user)) {
+        $saleParams[] = $ownerId;
+        $saleParams[] = $ownerId;
+    }
+    list($ownScope, $ownParams) = ownSalesScopeSql($user, 's');
+    $saleScope .= $ownScope;
+    $saleParams = array_merge($saleParams, $ownParams);
+
+    $stmt = $db->prepare("SELECT s.id FROM sales s" . $saleScope);
+    $stmt->execute($saleParams);
+    if (!$stmt->fetch()) {
+        echo json_encode(['success' => false, 'message' => 'Sale not found in your scope']);
+        exit;
+    }
+
     $stmt = $db->prepare("UPDATE sales SET printed = 1 WHERE id = ?");
     $stmt->execute([$saleId]);
     echo json_encode(['success' => true]);

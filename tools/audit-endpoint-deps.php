@@ -99,9 +99,10 @@ function functionsProvided(array $files, $seen = []) {
                 $have[strtolower($fn)] = true;
             }
         }
-        // Followed, not just read one level down: wa_agent.php requires
-        // marketing.php, and the functions the endpoint needs live there. A
-        // one-level check calls that a missing include and is wrong.
+        // Followed, not just read one level down: a required config file can
+        // require another (e.g. marketing.php), and the functions the endpoint
+        // needs live there. A one-level check calls that a missing include and
+        // is wrong.
         if (preg_match_all("/require_once\s+__DIR__\s*\.\s*'([^']+)'/", $src, $m2)) {
             $have += functionsProvided(
                 array_map(fn($p) => dirname($real) . '/' . $p, $m2[1]),
@@ -114,7 +115,6 @@ function functionsProvided(array $files, $seen = []) {
 
 $endpoints = [
     'admin/api/invoice-sms.php'  => ['getDB', 'isLoggedIn', 'getCurrentUser', 'startSecureSession'],
-    'admin/api/customer-wa-check.php' => ['getDB', 'isLoggedIn', 'getCurrentUser', 'startSecureSession', 'waAgentCheckCustomer', 'marketingNormalizePhone'],
     'admin/api/invoice-send.php' => ['getDB', 'isLoggedIn', 'getCurrentUser', 'startSecureSession'],
 ];
 

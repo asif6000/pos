@@ -42,20 +42,56 @@ try {
         exit;
     }
 
-    // Find the most recent sale containing this product (cross-store lookup)
+    // Find the most recent sale containing this product.
+    //
+    // A barcode is shop-local money: unscoped, this took the newest bill of ANY
+    // tenant that happened to sell the same product, wrote a return against it,
+    // moved that shop's stock and cut its totals. So the search stays inside the
+    // caller's own shop - or their own stores for an owner with several - and only
+    // a platform Super Admin, who bills across shops at the till, looks wider.
+    $isSuperAdmin = isSuperAdminUser($currentUser);
+    $callerStoreId = $currentUser['store_id'] ?? null;
+    $scope = '';
+    $scopeParams = [$product['id']];
+    if ($callerStoreId) {
+        $scope = " AND " . saleStoreExpr('s', 'u') . " = ?";
+        $scopeParams[] = $callerStoreId;
+    } elseif (!$isSuperAdmin) {
+        $scope = " AND " . saleOwnerScopeSql($ownerId, 's', 'u');
+        $scopeParams[] = $ownerId;
+        $scopeParams[] = $ownerId;
+    }
+    // A counter account (staff/cashier) looks for its own bills only, on top of
+    // whatever shop/store scope above applied.
+    list($ownScope, $ownParams) = ownSalesScopeSql($currentUser, 's');
+    $scope .= $ownScope;
+    $scopeParams = array_merge($scopeParams, $ownParams);
+
     $stmt = $db->prepare("
-        SELECT s.id, s.invoice_number, s.total, s.created_at
+        SELECT s.id, s.invoice_number, s.total, s.created_at,
+               s.user_id AS maker_id,
+               " . saleStoreExpr('s', 'u') . " AS store_id,
+               " . saleOwnerExpr('s', 'u') . " AS sale_owner_id
         FROM sales s
         JOIN sale_items si ON si.sale_id = s.id
-        WHERE si.product_id = ?
+        JOIN users u ON s.user_id = u.id
+        WHERE si.product_id = ?" . $scope . "
         ORDER BY s.created_at DESC
         LIMIT 1
     ");
-    $stmt->execute([$product['id']]);
+    $stmt->execute($scopeParams);
     $sale = $stmt->fetch();
 
     if (!$sale) {
         echo json_encode(['success' => false, 'message' => 'No sale found for this product']);
+        exit;
+    }
+
+    // A counter account (staff/cashier) returns only what it sold itself: a
+    // colleague's bill scanned here would move this shop's stock and cash for a
+    // return the colleague should have handled.
+    if (isOwnSalesOnlyUser($currentUser) && (int) $sale['maker_id'] !== (int) $currentUser['id']) {
+        echo json_encode(['success' => false, 'message' => 'Ei sale apnar nijer bikri na - return korte parben na.']);
         exit;
     }
 
@@ -111,23 +147,25 @@ try {
 
     $returnQty = $scannedItem['quantity'];
     $unitPrice = $scannedItem['unit_price'];
-    $totalAmount = $returnQty * $unitPrice;
+    $totalAmount = round($returnQty * $unitPrice, 2);
 
     // Generate return number
     $returnNumber = 'RET-' . date('Ymd') . '-' . str_pad(rand(1, 9999), 4, '0', STR_PAD_LEFT);
 
+    // DDL must not run inside the transaction below - an ALTER would commit it early.
+    ensureCashbookSourceColumns();
+    ensureCashbookDetailColumns();
+    ensureReturnExchangeColumns();
+
     $db->beginTransaction();
 
-    // Create return record
-    $stmt = $db->prepare("INSERT INTO returns (return_number, sale_id, user_id, total_amount, refund_method, reason, owner_id) VALUES (?, ?, ?, ?, 'cash', ?, ?)");
-    $stmt->execute([$returnNumber, $saleId, $currentUser['id'], $totalAmount, 'Barcode return: ' . $barcode, $ownerId]);
-    $returnId = $db->lastInsertId();
+    // The bill's own owner and shelf, for the same reason as the returns page: a
+    // Super Admin's return belongs on the shop's books, not on their own.
+    $saleOwnerId = $sale['sale_owner_id'] !== null ? (int)$sale['sale_owner_id'] : (int)$sale['maker_id'];
 
-    // Get sale store_id via user for store_stocks update
-    $stmtSale = $db->prepare("SELECT s.user_id, u.store_id FROM sales s JOIN users u ON s.user_id = u.id WHERE s.id = ?");
-    $stmtSale->execute([$saleId]);
-    $saleData = $stmtSale->fetch();
-    $saleStoreId = $saleData['store_id'] ?? 0;
+    // Which shelf the goods go back to, and so whose drawer pays for them. Resolved
+    // before anything is written, same fallback chain as the returns page.
+    $saleStoreId = (int)($sale['store_id'] ?? 0);
 
     if (!$saleStoreId) {
         $stmtCur = $db->prepare("SELECT store_id FROM users WHERE id = ?");
@@ -139,6 +177,18 @@ try {
         $stmtFallback->execute([$ownerId]);
         $saleStoreId = $stmtFallback->fetchColumn() ?: 0;
     }
+
+    // A barcode return always pays cash, so it always has to clear the guard the
+    // till's own returns page applies.
+    $guard = cashRefundGuard($saleOwnerId, $saleStoreId ?: null, 'cash', $totalAmount);
+    if (!$guard['ok']) {
+        throw new Exception($guard['message']);
+    }
+
+    // Create return record
+    $stmt = $db->prepare("INSERT INTO returns (return_number, sale_id, user_id, total_amount, transaction_type, exchange_amount, extra_amount_received, refund_amount, refund_method, reason, owner_id) VALUES (?, ?, ?, ?, 'return', 0, 0, ?, 'cash', ?, ?)");
+    $stmt->execute([$returnNumber, $saleId, $currentUser['id'], $totalAmount, $totalAmount, 'Barcode return: ' . $barcode, $saleOwnerId]);
+    $returnId = $db->lastInsertId();
 
     // Insert return item and update stock (+)
     $stmt = $db->prepare("INSERT INTO return_items (return_id, product_id, product_name, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?, ?)");
@@ -162,6 +212,17 @@ try {
     $stmt = $db->prepare("UPDATE sales SET subtotal = subtotal - ?, total = total - ?, paid_amount = paid_amount - ? WHERE id = ?");
     $stmt->execute([$totalAmount, $totalAmount, $totalAmount, $saleId]);
 
+    // ── Cashbook ──
+    // The shared helper books the refund once, under the shop's Product Refund
+    // category, against the bill it came from and the method it was paid by.
+    exchangeBalanceSettle($returnId, -$totalAmount, $returnNumber, [
+        'owner_id'       => $saleOwnerId,
+        'store_id'       => $saleStoreId ?: null,
+        'user_id'        => $currentUser['id'],
+        'payment_method' => 'cash',
+        'invoice_no'     => $sale['invoice_number'],
+    ]);
+
     $db->commit();
 
     // Store receipt data in session
@@ -178,7 +239,7 @@ try {
         'exchange_items' => [],
         'return_total' => (float) $totalAmount,
         'exchange_total' => 0.0,
-        'balance' => 0.0,
+        'balance' => -(float) $totalAmount,
         'is_exchange' => false
     ];
     setFlash('success', "Return #{$returnNumber} processed successfully! Stock updated.");

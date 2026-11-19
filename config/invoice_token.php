@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * The secret that lets a customer open one invoice without an account.
  *
@@ -146,16 +146,19 @@ function invoicePublicUrl($token, $schemeHint = '')
  * ------------------------------------
  * A receipt with items is not a summary. One item fits in a single segment;
  * five or six will not, and every segment past the first is charged again. The
- * item list is therefore capped, and when it is capped the message says so and
- * points at the link - a customer told "and 4 more" is told the truth, whereas a
- * receipt that silently stops halfway reads as a receipt for four items.
+ * item list is therefore capped, and when it is capped the message says so - a
+ * customer told "and 4 more" is told the truth, whereas a receipt that silently
+ * stops halfway reads as a receipt for four items.
  *
- * Nothing is ever truncated mid-value. Prices, totals and links are whole or
- * absent, because a clipped link is a dead one and a clipped total is a wrong one.
+ * Nothing here carries a link. The receipt is the invoice: the printed copy and
+ * this text are built from the same rows, and a URL costs the shop a second
+ * charged segment to say something the total already said.
+ *
+ * Nothing is ever truncated mid-value. Prices and totals are whole or absent.
  *
  * @param array $r  keys: shop_name, invoice_number, date_label, items (array of
  *                  name/qty/total), total, paid, paid_label, change, footer,
- *                  link, promo (array of label/url)
+ *                  promo (array of label/url)
  * @return array{text:string, segments:int, items_shown:int, items_total:int,
  *               truncated:bool}
  */
@@ -169,12 +172,12 @@ function invoiceSmsText(array $r)
 
     // Upper case, because that is how the shop asked for it and a receipt
     // screenshot is easier to place when the shop's name is the loudest line.
-    $shop = trim((string)($r['shop_name'] ?? ''));
+    $shop = invoiceSmsClean($r['shop_name'] ?? '');
     if ($shop !== '') {
         $out[] = strtoupper($shop);
     }
 
-    $number = trim((string)($r['invoice_number'] ?? ''));
+    $number = invoiceSmsClean($r['invoice_number'] ?? '');
     if ($number !== '') {
         // Labelled only when the shop's own numbering does not already say so:
         // these are generated as INV-000014, and "Invoice: INV INV-000014" on a
@@ -203,7 +206,10 @@ function invoiceSmsText(array $r)
         // the product form. Left alone it would break the layout of every line
         // after it, so it is flattened to spaces.
         $name = preg_replace('/\s+/u', ' ', $name);
-        $name = trim(invoiceSmsStrim($name, 40));
+        $name = invoiceSmsClean(invoiceSmsStrim($name, 40));
+        if ($name === '') {
+            continue;
+        }
 
         $qty = (float)($it['qty'] ?? 0);
         $line = (float)($it['total'] ?? 0);
@@ -228,7 +234,7 @@ function invoiceSmsText(array $r)
 
     $paid = (float)($r['paid'] ?? 0);
     if ($paid > 0) {
-        $paidLabel = trim((string)($r['paid_label'] ?? ''));
+        $paidLabel = invoiceSmsClean($r['paid_label'] ?? '');
         $out[] = 'Paid' . ($paidLabel !== '' ? ' (' . ucfirst(strtolower($paidLabel)) . ')' : '')
               . ' ' . invoiceSmsMoney($paid) . ' Tk';
     }
@@ -238,20 +244,9 @@ function invoiceSmsText(array $r)
         $out[] = 'Change: ' . invoiceSmsMoney($change) . ' Tk';
     }
 
-    $footer = trim((string)($r['footer'] ?? ''));
+    $footer = invoiceSmsClean($r['footer'] ?? '');
     if ($footer !== '') {
-        $out[] = preg_replace('/\s+/u', ' ', $footer);
-    }
-
-    // The link is optional and off unless asked for, because it is what pushes a
-    // receipt this size over a single segment. The shop chooses on the settings
-    // screen, where the cost difference is written next to the checkbox.
-    $link = trim((string)($r['link'] ?? ''));
-    if ($link !== '' && !preg_match('#^https?://#i', $link)) {
-        $link = '';
-    }
-    if ($link !== '') {
-        $out[] = 'Full invoice: ' . $link;
+        $out[] = $footer;
     }
 
     $promoLabel = trim((string)($r['promo']['label'] ?? ''));
@@ -267,6 +262,23 @@ function invoiceSmsText(array $r)
 
     $text = implode("\n", $out);
 
+    // The last gate, on the finished receipt rather than only on the values it
+    // was built from. Every field above is cleaned where it is read, but this is
+    // the one function every invoice message comes through - only the SMS door
+    // scrubs on its own. A customer must not be billed for a word nobody
+    // typed.
+    //
+    // Horizontal space only, and lines kept apart: collapsing \s+ here would fold
+    // the whole receipt onto one line.
+    $text = preg_replace('/[ \t]*\bundefined\b[ \t]*/i', ' ', $text);
+    $text = preg_replace('/[ \t]*\bNaN\b[ \t]*/', ' ', $text);
+    $text = preg_replace('/[ \t]{2,}/', ' ', $text);
+    $text = preg_replace('/^[ \t]+|[ \t]+$/m', '', $text);
+    // No receipt line is ever meant to be blank, so two newlines in a row is a
+    // line the scrub emptied.
+    $text = preg_replace('/\n{2,}/', "\n", $text);
+    $text = trim($text);
+
     // 160 is the GSM limit for a single message; a concatenated one is 153 a
     // part. The count is returned so the shop is told what it is being charged
     // for instead of discovering it on the bill.
@@ -279,6 +291,33 @@ function invoiceSmsText(array $r)
         'items_total'  => $total,
         'truncated'    => $truncated,
     ];
+}
+
+/**
+ * One value destined for the receipt, with the artefacts taken out.
+ *
+ * Two have actually reached a customer's phone: the bare word "undefined", which
+ * a stale browser build wrote into a field a cashier never filled, and an
+ * unfilled {token} that went out with its braces. Cleaning the value where it is
+ * read - rather than only the finished text - is what stops "Paid (Undefined)"
+ * arriving as "Paid ()".
+ *
+ * No /u on these patterns: they match ASCII only, and a message carrying a
+ * Bengali product name would risk preg_replace() returning null and blanking the
+ * receipt. The space collapse is ASCII whitespace too, so multibyte text passes
+ * through untouched apart from the words being cut.
+ */
+function invoiceSmsClean($s)
+{
+    $s = (string)$s;
+    $s = preg_replace('/\bundefined\b/i', ' ', $s);
+    $s = preg_replace('/\bNaN\b/', ' ', $s);
+    $s = preg_replace('/\{[a-z0-9_ ]+\}/i', ' ', $s);
+    $s = preg_replace('/\(\s*\)/', ' ', $s);
+    // ASCII whitespace, deliberately not \s+/u: a field holding bytes that are
+    // not valid UTF-8 would make the /u pattern return null and lose the line.
+    $s = preg_replace('/[\r\n\t ]+/', ' ', $s);
+    return trim($s);
 }
 
 /** A money value with no thousands separator: "678.00". */

@@ -80,9 +80,19 @@ include 'includes/header.php';
         margin-bottom: 0;
         padding-bottom: 0;
     }
+    /* The row declares four tracks but the markup only fills three (product,
+       quantity, remove), so on a phone the leftover 62px track is pure waste
+       and the product name is squeezed to two lines. */
+    @media (max-width: 768px) {
+        .transfer-form-grid { grid-template-columns: 1fr; }
+        .transfer-item-row {
+            grid-template-columns: minmax(0, 1fr) 90px auto;
+            gap: 0.75rem;
+        }
+    }
 </style>
 
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+<div class="page-toolbar">
     <div>
         <h2 style="margin-bottom: 0.5rem;">Stock Transfers</h2>
         <p class="text-muted">Move inventory between store locations</p>

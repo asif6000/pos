@@ -53,23 +53,19 @@ $shopName = $settings['shop_name'] ?? 'POS System';
 
             <nav class="sidebar-nav">
                     <?php
-                    // What this role may open, in one place. Both this sidebar and
-                    // the cashier one walk the same list, so a permission granted on
-                    // the Roles page shows up here the same way it does in the admin
-                    // menu. Nothing is printed for a role that can open none of it.
-                    $navItems = permissionNavItems();
-                    $navShown = array();
-                    foreach ($navItems as $ni) {
-                        if (hasPermission($ni['need'])) { $navShown[] = $ni; }
-                    }
+                    // The same table the admin sidebar and the phone app render, with
+                    // the same visibility rule already applied inside it - so nothing
+                    // is filtered here, and a row this list offers is a row the account
+                    // can open. Nothing is printed for a role that can open none of it.
+                    $navShown = permissionNavItems();
                     ?>
                     <?php if ($navShown): ?>
                     <div class="nav-section">
                         <div class="nav-section-title">Main</div>
                         <?php foreach ($navShown as $ni): ?>
-                        <a href="../admin/<?php echo $ni['page']; ?>"
-                            class="nav-item <?php echo $currentPage === basename($ni['page'], '.php') ? 'active' : ''; ?>">
-                            <i class="fas <?php echo $ni['icon']; ?>"></i>
+                        <a href="../admin/<?php echo rawurlencode($ni['page']); ?>"
+                            class="nav-item <?php echo $currentPage === basename($ni['page'], '.php') ? 'active' : ''; ?> <?php echo $ni['child'] ? 'nav-child nav-child-flat' : ''; ?>">
+                            <i class="<?php echo htmlspecialchars($ni['icon'], ENT_QUOTES, 'UTF-8'); ?>"></i>
                             <span><?php echo sanitize($ni['label']); ?></span>
                         </a>
                         <?php endforeach; ?>

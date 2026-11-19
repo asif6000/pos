@@ -21,17 +21,24 @@ if (!$returnId) {
 }
 
 $db = getDB();
+$user = getCurrentUser();
 
 try {
     // Get return details
+    //
+    // A return carries the shop it belongs to on its own row, and the counter
+    // account (staff/cashier) additionally only reads the returns against bills
+    // it rang up itself - the same rule the returns list follows, so a row the
+    // list shows is a row the details modal can open and nothing else.
+    list($ownScope, $ownParams) = ownSalesScopeSql($user, 's');
     $stmt = $db->prepare("
         SELECT r.*, s.invoice_number, u.name as processed_by
         FROM returns r
         JOIN sales s ON r.sale_id = s.id
         JOIN users u ON r.user_id = u.id
-        WHERE r.id = ?
+        WHERE r.id = ? AND u.owner_id = ?" . $ownScope . "
     ");
-    $stmt->execute([$returnId]);
+    $stmt->execute(array_merge([$returnId, $user['owner_id']], $ownParams));
     $return = $stmt->fetch();
 
     if (!$return) {

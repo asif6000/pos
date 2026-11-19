@@ -1,0 +1,35 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "base": {
+      "env": {
+        "EXPO_PUBLIC_SERVER_URL": "https://smartercollection.shop",
+        "EXPO_PUBLIC_API_PATH": "/shop/api.php"
+      }
+    },
+    "development": {
+      "extends": "base",
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": { "buildType": "apk" },
+      "channel": "development"
+    },
+    "preview": {
+      "extends": "base",
+      "distribution": "internal",
+      "android": { "buildType": "apk" },
+      "channel": "preview"
+    },
+    "production": {
+      "extends": "base",
+      "android": { "buildType": "app-bundle" },
+      "channel": "production"
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

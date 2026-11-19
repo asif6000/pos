@@ -7,16 +7,18 @@
 --  against already had them. The live database did not, so pages started failing
 --  with
 --      SQLSTATE[42S22] Unknown column 'google_synced_at' in 'SELECT'
---      SQLSTATE[42S22] Unknown column 'c.has_whatsapp' in 'SELECT'
 --  which is a blank HTTP 500 with nothing in the browser to explain it.
 --
 --  This file adds every column of every table, taken from the database the
 --  application is known to run correctly against. It is a reconciliation, not a
---  redesign: it only ever ADDs a column that is absent. It never drops, never
---  renames, never changes a type and never touches a stored value, so it is safe
---  on a database that is already correct and safe to run more than once.
+--  redesign: it only ever ADDs a column that is absent. It never renames, never
+--  changes a type and never touches a stored value, so it is safe on a database
+--  that is already correct and safe to run more than once. The one exception is
+--  customers.has_whatsapp / whatsapp_checked_at, which the WhatsApp integration
+--  used and which this file DROPs so a database reconciled by an older version
+--  of this file does not keep dead columns.
 --
---  251 columns across 28 tables.
+--  229 columns across 26 tables.
 --
 --  HOW TO USE
 --  Import with phpMyAdmin. Take a backup first.
@@ -62,7 +64,7 @@ PREPARE stmt FROM @sql;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- customers (12 column(s))
+-- customers (10 column(s), plus 2 dropped)
 SET @t := 'customers';
 SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLES
                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @t) > 0,
@@ -77,8 +79,8 @@ SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLES
     ADD COLUMN IF NOT EXISTS `google_synced_at` timestamp NULL DEFAULT NULL,
     ADD COLUMN IF NOT EXISTS `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ADD COLUMN IF NOT EXISTS `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    ADD COLUMN IF NOT EXISTS `has_whatsapp` tinyint(1) NULL,
-    ADD COLUMN IF NOT EXISTS `whatsapp_checked_at` timestamp NULL DEFAULT NULL'),
+    DROP COLUMN IF EXISTS `has_whatsapp`,
+    DROP COLUMN IF EXISTS `whatsapp_checked_at`'),
     'DO 0');
 PREPARE stmt FROM @sql;
 EXECUTE stmt;
@@ -510,46 +512,6 @@ SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLES
     ADD COLUMN IF NOT EXISTS `last_login` timestamp NULL DEFAULT NULL,
     ADD COLUMN IF NOT EXISTS `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ADD COLUMN IF NOT EXISTS `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'),
-    'DO 0');
-PREPARE stmt FROM @sql;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
-
--- whatsapp_contacts (10 column(s))
-SET @t := 'whatsapp_contacts';
-SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLES
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @t) > 0,
-    CONCAT('ALTER TABLE `whatsapp_contacts`
-    ADD COLUMN IF NOT EXISTS `id` int(11) NOT NULL,
-    ADD COLUMN IF NOT EXISTS `owner_id` int(11) NOT NULL,
-    ADD COLUMN IF NOT EXISTS `chat_id` varchar(20) NOT NULL,
-    ADD COLUMN IF NOT EXISTS `name` varchar(120) NULL,
-    ADD COLUMN IF NOT EXISTS `notify` varchar(120) NULL,
-    ADD COLUMN IF NOT EXISTS `username` varchar(60) NULL,
-    ADD COLUMN IF NOT EXISTS `wa_last_at` datetime NULL,
-    ADD COLUMN IF NOT EXISTS `wa_unread` int(11) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS `source` varchar(10) NOT NULL DEFAULT ''''''known'''''',
-    ADD COLUMN IF NOT EXISTS `seen_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP'),
-    'DO 0');
-PREPARE stmt FROM @sql;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
-
--- whatsapp_messages (10 column(s))
-SET @t := 'whatsapp_messages';
-SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLES
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @t) > 0,
-    CONCAT('ALTER TABLE `whatsapp_messages`
-    ADD COLUMN IF NOT EXISTS `id` int(11) NOT NULL,
-    ADD COLUMN IF NOT EXISTS `owner_id` int(11) NOT NULL,
-    ADD COLUMN IF NOT EXISTS `chat_id` varchar(20) NOT NULL,
-    ADD COLUMN IF NOT EXISTS `direction` enum(''in'',''out'') NOT NULL,
-    ADD COLUMN IF NOT EXISTS `body` text NULL,
-    ADD COLUMN IF NOT EXISTS `has_media` tinyint(1) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS `wa_message_id` varchar(90) NULL,
-    ADD COLUMN IF NOT EXISTS `is_revoked` tinyint(1) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS `read_at` timestamp NULL DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP'),
     'DO 0');
 PREPARE stmt FROM @sql;
 EXECUTE stmt;

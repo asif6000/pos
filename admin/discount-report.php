@@ -18,6 +18,10 @@ $user = getCurrentUser();
 $ownerId = $user['owner_id'];
 $store_id = $user['store_id'] ?? null;
 
+// A counter account (staff/cashier) reads the whole discount report through its
+// own bills; empty fragment for everyone else.
+list($ownScope, $ownParams) = ownSalesScopeSql($user);
+
 // Filter parameters
 $filter = sanitize($_GET['filter'] ?? 'today');
 $dateFrom = sanitize($_GET['date_from'] ?? date('Y-m-d'));
@@ -65,10 +69,14 @@ switch ($filter) {
 
 // Scope helper
 function buildWhereClause($ownerId, $store_id = null) {
+    // A counter account (staff/cashier) reads every figure through its own
+    // bills, on top of whatever shop/store scope the caller asked for.
+    list($ownScope, $ownParams) = ownSalesScopeSql();
     if ($store_id) {
-        return ["JOIN users u ON s.user_id = u.id WHERE u.store_id = ?", [$store_id]];
+        return ["JOIN users u ON s.user_id = u.id WHERE " . saleStoreExpr() . " = ?" . $ownScope, array_merge([$store_id], $ownParams)];
     }
-    return ["JOIN users u ON s.user_id = u.id WHERE u.owner_id = ?", [$ownerId]];
+    // Two placeholders, so the owner id is bound twice.
+    return ["JOIN users u ON s.user_id = u.id WHERE " . saleOwnerScopeSql($ownerId) . $ownScope, array_merge([$ownerId, $ownerId], $ownParams)];
 }
 
 try {
@@ -104,12 +112,15 @@ try {
     $paymentDiscounts = $stmt->fetchAll();
 
     // ── Discount Breakdown by Store (filtered period) ──────────────────────
+    // Grouped on the sale's own store: a bill that was rung across two shelves
+    // belongs to the shop whose stock it came off, not to whoever stood at the till.
+    $saleStore = saleStoreExpr();
     if ($store_id) {
-        $stmt = $db->prepare("SELECT u.store_id, st.name as store_name, COUNT(s.id) as count, COALESCE(SUM(s.discount_amount), 0) as total_discount, COALESCE(SUM(s.subtotal), 0) as subtotal FROM sales s JOIN users u ON s.user_id = u.id LEFT JOIN stores st ON u.store_id = st.id WHERE u.store_id = ? AND s.created_at BETWEEN ? AND ? AND s.discount_amount > 0 GROUP BY u.store_id, st.name ORDER BY total_discount DESC");
-        $stmt->execute([$store_id, $queryFrom, $queryTo]);
+        $stmt = $db->prepare("SELECT $saleStore AS sid, st.name as store_name, COUNT(s.id) as count, COALESCE(SUM(s.discount_amount), 0) as total_discount, COALESCE(SUM(s.subtotal), 0) as subtotal FROM sales s JOIN users u ON s.user_id = u.id LEFT JOIN stores st ON st.id = $saleStore WHERE $saleStore = ?" . $ownScope . " AND s.created_at BETWEEN ? AND ? AND s.discount_amount > 0 GROUP BY sid, st.name ORDER BY total_discount DESC");
+        $stmt->execute(array_merge([$store_id], $ownParams, [$queryFrom, $queryTo]));
     } else {
-        $stmt = $db->prepare("SELECT u.store_id, st.name as store_name, COUNT(s.id) as count, COALESCE(SUM(s.discount_amount), 0) as total_discount, COALESCE(SUM(s.subtotal), 0) as subtotal FROM sales s JOIN users u ON s.user_id = u.id LEFT JOIN stores st ON u.store_id = st.id WHERE u.owner_id = ? AND s.created_at BETWEEN ? AND ? AND s.discount_amount > 0 GROUP BY u.store_id, st.name ORDER BY total_discount DESC");
-        $stmt->execute([$ownerId, $queryFrom, $queryTo]);
+        $stmt = $db->prepare("SELECT $saleStore AS sid, st.name as store_name, COUNT(s.id) as count, COALESCE(SUM(s.discount_amount), 0) as total_discount, COALESCE(SUM(s.subtotal), 0) as subtotal FROM sales s JOIN users u ON s.user_id = u.id LEFT JOIN stores st ON st.id = $saleStore WHERE " . saleOwnerScopeSql($ownerId) . $ownScope . " AND s.created_at BETWEEN ? AND ? AND s.discount_amount > 0 GROUP BY sid, st.name ORDER BY total_discount DESC");
+        $stmt->execute(array_merge([$ownerId, $ownerId], $ownParams, [$queryFrom, $queryTo]));
     }
     $storeDiscounts = $stmt->fetchAll();
 
@@ -120,12 +131,16 @@ try {
     $dailyTrend = $stmt->fetchAll();
 
     // ── Discount Detail List (filtered period) ──────────────────────────────
-    $detailParams = [$ownerId, $queryFrom, $queryTo];
-    $detailWhere = "u.owner_id = ?";
+    // Bindings follow placeholder order: scope first (owner or store, then the
+    // counter account's own-bill filter), then the window.
+    $detailParams = [$ownerId, $ownerId];
+    $detailWhere = saleOwnerScopeSql($ownerId);
     if ($store_id) {
-        $detailParams = [$store_id, $queryFrom, $queryTo];
-        $detailWhere = "u.store_id = ?";
+        $detailParams = [$store_id];
+        $detailWhere = saleStoreExpr() . " = ?";
     }
+    $detailWhere .= $ownScope;
+    $detailParams = array_merge($detailParams, $ownParams, [$queryFrom, $queryTo]);
     $stmt = $db->prepare("
         SELECT 
             s.id,
@@ -509,6 +524,7 @@ include 'includes/header.php';
                     'rocket' => ['#8b5cf6', '#f5f3ff'],
                     'card'   => ['#3b82f6', '#eff6ff'],
                     'bank'   => ['#0ea5e9', '#ecfeff'],
+                    'lottery' => ['#ca8a04', '#fefce8'],
                 ];
                 foreach ($paymentDiscounts as $pd):
                     $pc = $payColors[$pd['payment_method']] ?? ['#64748b', '#f1f5f9'];

@@ -49,6 +49,28 @@ if (!$saleId) {
 $db = getDB();
 
 try {
+    // The sale's own shop gates the delete: a bill belongs to the shop that
+    // rang it, and a counter account (staff/cashier) holding the delete
+    // permission is narrower still - only its own bills, never a colleague's.
+    // Checked before anything is opened, so a refusal leaves nothing behind.
+    $user = getCurrentUser();
+    list($ownScope, $ownParams) = ownSalesScopeSql($user, 's');
+    $scopeSql = " JOIN users u ON s.user_id = u.id WHERE s.id = ?" .
+        (isSuperAdminUser($user) ? '' : " AND " . saleOwnerScopeSql($user['owner_id'], 's', 'u')) . $ownScope;
+    $scopeParams = array_merge([$saleId],
+        isSuperAdminUser($user) ? [] : [$user['owner_id'], $user['owner_id']],
+        $ownParams);
+    $stmt = $db->prepare("SELECT s.id FROM sales s" . $scopeSql);
+    $stmt->execute($scopeParams);
+    if (!$stmt->fetch()) {
+        echo json_encode(['success' => false, 'message' => 'Sale not found in your scope']);
+        exit;
+    }
+
+    // The sale's own cashbook lines are dropped inside the transaction below, and
+    // that table's runtime migration is DDL, which MySQL commits along with any
+    // transaction it lands in. Settled here, while nothing is open yet.
+    ensureCashbookWriteReady();
     $db->beginTransaction();
 
     // Get already-returned quantities per product for this sale
@@ -140,6 +162,12 @@ try {
     echo json_encode(['success' => true, 'message' => 'Sale deleted and stock restored']);
 
 } catch (PDOException $e) {
-    $db->rollBack();
+    // Guarded because the transaction may already be gone: MySQL commits on its own
+    // if a statement inside it forced a schema change, and rolling back then throws
+    // "There is no active transaction" - which would replace the real error with a
+    // confusing one, on a sale whose rows may already be written.
+    if ($db->inTransaction()) {
+        $db->rollBack();
+    }
     echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
 }
